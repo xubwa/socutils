@@ -17,16 +17,20 @@ those of the zmr spinor sector.
 '''
 
 import numpy
+from pyscf.fci import fci_dhf_slow
 
 from socutils.mcscf import zmc_response
 from socutils.zmr.interface import socutils_x2c
 from socutils.zmr.pc.nevpt2 import PCNEVPT2
 
 
-def build_pt(mf, mc, mo, civecs, cderi, weights=None, max_memory=4000, degeneracy_tol=None):
-    '''The spinor PC-NEVPT2 (all orbitals correlated) of the CI vectors civecs (columns);
-    degeneracy_tol: NEVPT2Base.degeneracy_tol (states sharing their E0).'''
-    eris = socutils_x2c.mo_eris(mf, mf.mol, mo, 0, mc.ncore, mc.ncas, cderi=cderi)
+def build_pt(mf, mc, mo, civecs, cderi, weights=None, max_memory=4000, degeneracy_tol=None,
+             nfrozen=0):
+    '''The spinor PC-NEVPT2 of the CI vectors civecs (columns), the first nfrozen orbitals of
+    mo frozen (folded into the integrals; frozen_partition picks them); degeneracy_tol:
+    NEVPT2Base.degeneracy_tol (states sharing their E0).'''
+    eris = socutils_x2c.mo_eris(mf, mf.mol, mo, nfrozen, mc.ncore - nfrozen, mc.ncas,
+                                cderi=cderi)
     pt = PCNEVPT2(eris, mc.nelecas, civecs=civecs, weights=weights, e0='state')
     if degeneracy_tol is not None:
         pt.degeneracy_tol = degeneracy_tol
@@ -62,33 +66,99 @@ def ci_gradient(pt):
     return g + cg.fock_g(pt, ctx, d_gen)
 
 
+def frozen_partition(mf, mc, mo, ci, weights, nfrozen, cderi=None):
+    '''(mo', eps): the core orbitals of mo replaced by the eigenvectors of the core block of
+    the averaged generalized Fock matrix F = h + (J - K)[core + active gamma_SA], ascending
+    (the averaged CASSCF energy does not change); the first nfrozen of them are the frozen
+    core of the NEVPT2.  A degeneracy across the boundary (a Kramers pair split) is an
+    error.'''
+    ncore = mc.ncore
+    if nfrozen == 0:
+        return mo, None
+    cderi = mf.with_df._cderi if cderi is None else cderi
+    gamma = sum(w * fci_dhf_slow.make_rdm12(numpy.asarray(c, dtype=complex).ravel(), mc.ncas,
+                                            mc.nelecas)[0] for w, c in zip(weights, ci))
+    eris0 = socutils_x2c.mo_eris(mf, mf.mol, mo, 0, ncore, mc.ncas, cderi=cderi)
+    f = eris0.generalized_fock(gamma)
+    e, v = numpy.linalg.eigh(0.5 * (f[:ncore, :ncore] + f[:ncore, :ncore].conj().T))
+    if nfrozen < ncore and e[nfrozen] - e[nfrozen - 1] < 1e-6:
+        raise ValueError('frozen core: no gap after %d core orbitals (%.2e)'
+                         % (nfrozen, e[nfrozen] - e[nfrozen - 1]))
+    mo = numpy.array(mo, copy=True)
+    mo[:, :ncore] = mo[:, :ncore] @ v
+    return mo, e
+
+
+def _e2_terms(mc, mf, mo, resp, out, nfrozen, states):
+    '''(G_orb, {J: G_J}, D_unrelaxed (AO)) of E2 from one zmr.uc.gradient.derivatives result
+    out of a PC-NEVPT2 of the model states `states` (indices into resp.ci): the gradient in
+    the parameters of zmc_response and the unrelaxed density in the orbitals mo.  With a
+    frozen core (mo from frozen_partition) also the multipliers zeta_fc of the condition
+    F_fc = 0 (f frozen, c correlated core, F the averaged generalized Fock matrix) that fixes
+    the frozen space: zeta_fc = -G_fc / (e_f - e_c), and the target Re sum conj(zeta) F_fc
+    adds its orbital and CI gradients (through gamma_SA) and its density.'''
+    from socutils.zmr.reference import orbital_gradient as og
+    nf = nfrozen
+    n_all = mo.shape[1]
+    u = numpy.eye(n_all, dtype=complex)
+    u[nf:, nf:] = out['u']
+    m = numpy.conj(u) @ out['grad'] @ u.T             # input orbitals: phi_qc = phi u
+    d = numpy.zeros((n_all, n_all), dtype=complex)
+    d[nf:, nf:] = out['d']
+    d = numpy.conj(u) @ d @ u.T                       # D[p, q] = dE2/dO[p, q]
+    g_ci = numpy.atleast_2d(out['g_ci'])
+    g_states = {j: g_ci[n] for n, j in enumerate(states)}
+    if nf:
+        ncore, ncas = mc.ncore, mc.ncas
+        act = slice(ncore, ncore + ncas)
+        eris0 = socutils_x2c.mo_eris(mf, mf.mol, mo, 0, ncore, ncas, cderi=resp.cderi)
+        gam = numpy.zeros((n_all, n_all), dtype=complex)
+        gam[:ncore, :ncore] = numpy.eye(ncore)
+        gam[act, act] = resp.dm1
+        f = eris0.generalized_fock(resp.dm1)
+        eps = f.diagonal().real
+        fi, cj = numpy.arange(nf), numpy.arange(nf, ncore)
+        g_fc = numpy.conj(m[numpy.ix_(fi, cj)]) - m[numpy.ix_(cj, fi)].T
+        zeta = -g_fc / (eps[fi][:, None] - eps[cj][None, :])
+        dz = numpy.zeros((n_all, n_all), dtype=complex)
+        dz[numpy.ix_(fi, cj)] = 0.5 * zeta.conj()
+        dz[numpy.ix_(cj, fi)] = 0.5 * zeta.T
+        mz, y = og._fock_m(eris0, dz, gam, f, return_y=True, c=mo)
+        m = m + mz
+        d = d + dz
+        h2e = fci_dhf_slow.absorb_h1e(y[act, act], numpy.zeros((ncas,) * 4, dtype=complex),
+                                      ncas, mc.nelecas, .5)
+        for j, (w, c) in enumerate(zip(resp.weights, resp.ci)):
+            gz = w * resp._h(h2e, c)
+            g_states[j] = g_states.get(j, 0) + gz
+    p, q = numpy.nonzero(mc.uniq_var_indices(n_all, mc.ncore, mc.ncas, mc.frozen))
+    g_orb = numpy.conj(m[p, q]) - m[q, p]
+    g_parts = {j: 2 * (g - numpy.vdot(resp.ci[j], g).real * resp.ci[j]) for j, g in g_states.items()}
+    return g_orb, g_parts, mo @ d.T @ mo.conj().T
+
+
 def relaxed_rdm1(mc, mf, mo, ci, weights, state=0, cderi=None, max_memory=4000,
-                 return_parts=False):
+                 return_parts=False, nfrozen=0):
     '''AO (j-spinor) density of state `state` of the averaged CASSCF (orbitals mo, CI
     vectors ci) whose expectation values are the derivatives of E_k(CASSCF) +
-    E2(state-specific PC-NEVPT2), all orbitals correlated.  return_parts: also
-    (D_k, D_unrelaxed, D_z).'''
+    E2(state-specific PC-NEVPT2); nfrozen: the frozen core of the NEVPT2 (the lowest
+    orbitals of frozen_partition).  return_parts: also (D_k, D_unrelaxed, D_z).'''
+    from socutils.zmr.uc import gradient
     cderi = mf.with_df._cderi if cderi is None else cderi
     ci = [numpy.asarray(c, dtype=complex).ravel() for c in ci]
+    mo, _ = frozen_partition(mf, mc, mo, ci, weights, nfrozen, cderi)
     resp = zmc_response.SAResponse(mc, mo, ci, weights, cderi=cderi)
-    pt = build_pt(mf, mc, mo, ci[state][:, None], cderi, max_memory=max_memory)
-    rhs = zmc_response.state_gradient(resp, state)
-    # E2: unrelaxed density, orbital and CI gradients in one pass (zmr.uc.gradient)
-    from socutils.zmr.uc import gradient
-    out = gradient.derivatives(pt, max_memory=max_memory)
-    u = numpy.asarray(out['u'])
-    m = numpy.conj(u) @ out['grad'] @ u.T            # input orbitals: phi_qc = phi u
-    p, q = numpy.nonzero(mc.uniq_var_indices(m.shape[0], mc.ncore, mc.ncas, mc.frozen))
-    rhs[:resp.n_orb] += numpy.conj(m[p, q]) - m[q, p]
-    g = out['g_ci']
-    c = ci[state]
-    parts = resp.split(rhs)
-    parts[1 + state] = parts[1 + state] + 2 * (g - numpy.vdot(c, g).real * c)
-    rhs = resp.join(parts)
-    z = zmc_response.zvector(resp, rhs)
+    resp.cderi = cderi
+    pt = build_pt(mf, mc, mo, ci[state][:, None], cderi, max_memory=max_memory, nfrozen=nfrozen)
+    out = gradient.derivatives(pt, max_memory=max_memory,
+                               frozen_coeff=mo[:, :nfrozen] if nfrozen else None)
+    g_orb, g_parts, d_unrel = _e2_terms(mc, mf, mo, resp, out, nfrozen, [state])
+    parts = resp.split(zmc_response.state_gradient(resp, state))
+    parts[0] = parts[0] + g_orb
+    for j, g in g_parts.items():
+        parts[1 + j] = parts[1 + j] + g
+    z = zmc_response.zvector(resp, resp.join(parts))
     d_k = zmc_response.state_density(resp, state)
-    d2 = numpy.conj(u) @ out['d'] @ u.T               # D[p, q] = dE2/dO[p, q], input orbitals
-    d_unrel = mo @ d2.T @ mo.conj().T
     d_z = zmc_response.lagrangian_density(resp, z)
     dm = d_k + d_unrel + d_z
     if return_parts:
@@ -114,33 +184,33 @@ def level_weights(heff, levels, tol=1e-8):
     return numpy.array(out), e
 
 
-def _relaxed_for_rhos(mc, mf, mo, ci, weights, rhos, cderi, max_memory):
+def _relaxed_for_rhos(mc, mf, mo, ci, weights, rho_fn, cderi, max_memory, nfrozen=0):
     '''(AO densities D[n], parts, pt): the relaxed densities of the targets
     T_n = sum_IJ rhos[n]_IJ heff_IJ (rhos Hermitian) of the multi-state PC-NEVPT2 on all
-    states of the averaged spinor CASSCF: dT_n/dlambda = tr(O D[n]).  One pass over the
-    classes, one Z-vector per target (rotations among degenerate averaged states
-    projected out).'''
+    states of the averaged spinor CASSCF: dT_n/dlambda = tr(O D[n]), rhos = rho_fn(heff)
+    from the heff of that NEVPT2.  One pass over the classes, one Z-vector per target
+    (rotations among degenerate averaged states projected out); nfrozen: frozen core (mo
+    is taken from frozen_partition).'''
     from socutils.zmr.uc import gradient
     ci = [numpy.asarray(c, dtype=complex).ravel() for c in ci]
+    mo, _ = frozen_partition(mf, mc, mo, ci, weights, nfrozen, cderi)
     resp = zmc_response.SAResponse(mc, mo, ci, weights, cderi=cderi)
-    pt = build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights, max_memory=max_memory)
-    rhos = numpy.asarray(rhos)
-    outs = gradient.derivatives(pt, max_memory=max_memory, rho=rhos)
-    p, q = numpy.nonzero(mc.uniq_var_indices(mo.shape[1], mc.ncore, mc.ncas, mc.frozen))
+    resp.cderi = cderi
+    pt = build_pt(mf, mc, mo, numpy.array(ci).T, cderi, weights=weights, max_memory=max_memory,
+                  nfrozen=nfrozen)
+    rhos = numpy.asarray(rho_fn(pt.heff))
+    outs = gradient.derivatives(pt, max_memory=max_memory, rho=rhos,
+                                frozen_coeff=mo[:, :nfrozen] if nfrozen else None)
     null = zmc_response.degenerate_rotations(resp)
     dms, parts_all = [], []
     for rho, out in zip(rhos, outs):
-        u = numpy.asarray(out['u'])
-        m = numpy.conj(u) @ out['grad'] @ u.T
+        g_orb, g_parts, d_unrel = _e2_terms(mc, mf, mo, resp, out, nfrozen, range(len(ci)))
         parts = resp.split(zmc_response.model_gradient(resp, rho))
-        parts[0] = parts[0] + numpy.conj(m[p, q]) - m[q, p]
-        for j, c in enumerate(ci):
-            g = out['g_ci'][j]
-            parts[1 + j] = parts[1 + j] + 2 * (g - numpy.vdot(c, g).real * c)
+        parts[0] = parts[0] + g_orb
+        for j, g in g_parts.items():
+            parts[1 + j] = parts[1 + j] + g
         z = zmc_response.zvector(resp, resp.join(parts), extra_null=null)
         d_model = zmc_response.model_density(resp, rho)
-        d2 = numpy.conj(u) @ out['d'] @ u.T
-        d_unrel = mo @ d2.T @ mo.conj().T
         d_z = zmc_response.lagrangian_density(resp, z)
         dms.append(d_model + d_unrel + d_z)
         parts_all.append((d_model, d_unrel, d_z))
@@ -148,25 +218,31 @@ def _relaxed_for_rhos(mc, mf, mo, ci, weights, rhos, cderi, max_memory):
 
 
 def relaxed_rdm1_levels(mc, mf, mo, ci, weights, levels=None, cderi=None, max_memory=4000,
-                        degeneracy_tol=1e-8, return_parts=False):
+                        degeneracy_tol=1e-8, return_parts=False, nfrozen=0):
     '''AO densities of levels of the multi-state PC-NEVPT2 (union contraction, the
     zeroth-order energy of every state) on all states of the averaged spinor CASSCF, whose
     expectation values are the derivatives of the eigenvalues `levels` of heff (default
-    all; a degenerate multiplet averaged, level_weights) for time-even operators.  Returns
-    a list; return_parts: also (D_model, D_unrelaxed, D_z) and the eigenvalue.'''
+    all; a degenerate multiplet averaged, level_weights) for time-even operators; nfrozen:
+    frozen core.  Returns a list; return_parts: also (D_model, D_unrelaxed, D_z) and the
+    eigenvalue.'''
     cderi = mf.with_df._cderi if cderi is None else cderi
-    probe = build_pt(mf, mc, mo, numpy.array([numpy.asarray(c).ravel() for c in ci]).T, cderi,
-                     weights=weights, max_memory=max_memory)
     levels = list(range(len(ci))) if levels is None else list(levels)
-    rhos, e = level_weights(probe.heff, levels, degeneracy_tol)
-    dms, parts, _ = _relaxed_for_rhos(mc, mf, mo, ci, weights, rhos, cderi, max_memory)
+    energies = {}
+
+    def rho_fn(heff):
+        rhos, e = level_weights(heff, levels, degeneracy_tol)
+        energies['e'] = e
+        return rhos
+    dms, parts, _ = _relaxed_for_rhos(mc, mf, mo, ci, weights, rho_fn, cderi, max_memory,
+                                      nfrozen)
     if return_parts:
-        return [(d, x, float(e[k])) for d, x, k in zip(dms, parts, levels)]
+        return [(d, x, float(energies['e'][k])) for d, x, k in zip(dms, parts, levels)]
     return dms
 
 
 def relaxed_level_matrix(mc, mf, mo, ci, weights, level=0, cderi=None, max_memory=4000,
-                         degeneracy_tol=1e-8, return_unrelaxed=False):
+                         degeneracy_tol=1e-8, return_unrelaxed=False, nfrozen=0,
+                         return_all=False):
     '''(e, D): the degenerate multiplet of level `level` of heff (eigenvectors c_m, energy
     e) and the relaxed transition densities D[m][n] (AO) with
 
@@ -176,30 +252,35 @@ def relaxed_level_matrix(mc, mf, mo, ci, weights, level=0, cderi=None, max_memor
     one-electron perturbation (time-odd ones split a Kramers pair: magnetic properties).
     T_mn is complex: its real and imaginary parts, sum rho_IJ heff_IJ with the Hermitian
     rho = (r + r^+)/2 and (r - r^+)/2i, r_IJ = conj(c_mI) c_nJ, are two targets.
-    return_unrelaxed: also the matrix at fixed orbitals and CI vectors.'''
+    return_unrelaxed: also the matrix at fixed orbitals and CI vectors; return_all: (e,
+    {'model', 'unrelaxed', 'relaxed'}) instead; nfrozen: frozen core.'''
     cderi = mf.with_df._cderi if cderi is None else cderi
-    probe = build_pt(mf, mc, mo, numpy.array([numpy.asarray(c).ravel() for c in ci]).T, cderi,
-                     weights=weights, max_memory=max_memory)
-    e, vec = numpy.linalg.eigh(probe.heff)
-    group = numpy.nonzero(abs(e - e[level]) < degeneracy_tol)[0]
-    keys, rhos = [], []
-    for a, m in enumerate(group):
-        for b, n in enumerate(group):
-            if b < a:
-                continue
-            r = numpy.outer(vec[:, m].conj(), vec[:, n])
-            keys.append((a, b, 're'))
-            rhos.append(0.5 * (r + r.conj().T))
-            if b != a:
-                keys.append((a, b, 'im'))
-                rhos.append((r - r.conj().T) / 2j)
-    dms, parts, _ = _relaxed_for_rhos(mc, mf, mo, ci, weights, rhos, cderi, max_memory)
+    info = {}
+
+    def rho_fn(heff):
+        e, vec = numpy.linalg.eigh(heff)
+        group = numpy.nonzero(abs(e - e[level]) < degeneracy_tol)[0]
+        keys, rhos = [], []
+        for a, m in enumerate(group):
+            for b, n in enumerate(group):
+                if b < a:
+                    continue
+                r = numpy.outer(vec[:, m].conj(), vec[:, n])
+                keys.append((a, b, 're'))
+                rhos.append(0.5 * (r + r.conj().T))
+                if b != a:
+                    keys.append((a, b, 'im'))
+                    rhos.append((r - r.conj().T) / 2j)
+        info.update(e=e[level], k=len(group), keys=keys)
+        return rhos
+    dms, parts, _ = _relaxed_for_rhos(mc, mf, mo, ci, weights, rho_fn, cderi, max_memory,
+                                      nfrozen)
 
     def matrix(ds):
-        k = len(group)
+        k = info['k']
         nao = ds[0].shape[0]
         out = [[numpy.zeros((nao, nao), dtype=complex) for _ in range(k)] for _ in range(k)]
-        for (a, b, part), d in zip(keys, ds):
+        for (a, b, part), d in zip(info['keys'], ds):
             if part == 're':
                 out[a][b] = out[a][b] + d
                 if b != a:
@@ -208,9 +289,13 @@ def relaxed_level_matrix(mc, mf, mo, ci, weights, level=0, cderi=None, max_memor
                 out[a][b] = out[a][b] + 1j * d
                 out[b][a] = out[b][a] - 1j * d
         return out
+    e = float(info['e'])
+    if return_all:
+        return e, {'model': matrix([x[0] for x in parts]),
+                   'unrelaxed': matrix([x[0] + x[1] for x in parts]), 'relaxed': matrix(dms)}
     if return_unrelaxed:
-        return float(e[level]), matrix(dms), matrix([x[0] + x[1] for x in parts])
-    return float(e[level]), matrix(dms)
+        return e, matrix(dms), matrix([x[0] + x[1] for x in parts])
+    return e, matrix(dms)
 
 
 # ----------------------------------------------------------------------
@@ -247,51 +332,40 @@ def hyperfine_ops(mf, atom, utm=True):
 
 
 def relaxed_doublet_blocks(mc, mf, mo, ci, weights, ops, level=0, cderi=None,
-                           max_memory=4000):
+                           max_memory=4000, nfrozen=0):
     '''(energy, {'model', 'unrelaxed', 'relaxed'}: (ncomp, 2, 2)) the matrices
     <m|O_c|n> over the Kramers doublet of level `level` of the multi-state PC-NEVPT2 for
     the operators ops (ncomp, n2c, n2c): the CASSCF-model part, the derivative at fixed
     orbitals and CI vectors, and the relaxed one (relaxed_level_matrix; one solution for
-    all operators).'''
-    cderi = mf.with_df._cderi if cderi is None else cderi
-    probe = build_pt(mf, mc, mo, numpy.array([numpy.asarray(c).ravel() for c in ci]).T, cderi,
-                     weights=weights, max_memory=max_memory)
-    e, vec = numpy.linalg.eigh(probe.heff)
-    group = numpy.nonzero(abs(e - e[level]) < 1e-8)[0]
-    if len(group) != 2:
+    all operators); nfrozen: frozen core.'''
+    e_k, mats = relaxed_level_matrix(mc, mf, mo, ci, weights, level=level, cderi=cderi,
+                                     max_memory=max_memory, nfrozen=nfrozen, return_all=True)
+    if len(mats['relaxed']) != 2:
         raise ValueError('level %d is %d-fold degenerate, not a Kramers doublet'
-                         % (level, len(group)))
-    e_k, d_rel, d_un = relaxed_level_matrix(mc, mf, mo, ci, weights, level=level, cderi=cderi,
-                                            max_memory=max_memory, return_unrelaxed=True)
-    resp = zmc_response.SAResponse(mc, mo, ci, weights, cderi=cderi)
-    d_model = [[None, None], [None, None]]
-    for a, m in enumerate(group):
-        for b, n in enumerate(group):
-            r = numpy.outer(vec[:, m].conj(), vec[:, n])
-            d_model[a][b] = (zmc_response.model_density(resp, 0.5 * (r + r.conj().T))
-                             + 1j * zmc_response.model_density(resp, (r - r.conj().T) / 2j))
+                         % (level, len(mats['relaxed'])))
 
     def block(d):
         return numpy.array([[[numpy.einsum('ij,ji', o, d[a][b]) for b in range(2)]
                              for a in range(2)] for o in ops])
-    return e_k, {'model': block(d_model), 'unrelaxed': block(d_un), 'relaxed': block(d_rel)}
+    return e_k, {k: block(d) for k, d in mats.items()}
 
 
 def relaxed_g_tensor(mc, mf, mo, ci, weights, level=0, cderi=None, max_memory=4000,
-                     origin=None, ops=None):
+                     origin=None, ops=None, nfrozen=0):
     '''g tensors {'energy', 'model', 'unrelaxed', 'relaxed'} of the Kramers doublet of
     level `level` (relaxed_doublet_blocks of the magnetic-moment operators,
     g_tensor_from_block).'''
     if ops is None:
         ops = magnetic_moment_ops(mf, origin)
-    e_k, blocks = relaxed_doublet_blocks(mc, mf, mo, ci, weights, ops, level, cderi, max_memory)
+    e_k, blocks = relaxed_doublet_blocks(mc, mf, mo, ci, weights, ops, level, cderi, max_memory,
+                                         nfrozen)
     out = {k: g_tensor_from_block(b) for k, b in blocks.items()}
     out['energy'] = e_k
     return out
 
 
 def relaxed_hyperfine_tensor(mc, mf, mo, ci, weights, atoms, level=0, cderi=None,
-                             max_memory=4000, origin=None):
+                             max_memory=4000, origin=None, nfrozen=0):
     '''g and hyperfine tensors of the Kramers doublet of level `level`:
     {'energy', 'g': {kind: (3, 3)}, 'A': {kind: (natoms, 3, 3)}} for kind in model /
     unrelaxed / relaxed.  A_ab = Tr(M_a sigma_b) in the pseudo-spin frame fixed by g of
@@ -300,7 +374,7 @@ def relaxed_hyperfine_tensor(mc, mf, mo, ci, weights, atoms, level=0, cderi=None
     from socutils.prop import observables
     ops = [magnetic_moment_ops(mf, origin)] + [hyperfine_ops(mf, a) for a in atoms]
     e_k, blocks = relaxed_doublet_blocks(mc, mf, mo, ci, weights, numpy.concatenate(ops),
-                                         level, cderi, max_memory)
+                                         level, cderi, max_memory, nfrozen)
     out = {'energy': e_k, 'g': {}, 'A': {}}
     for kind, b in blocks.items():
         p, r = observables.pseudo_spin_frame(observables.pseudo_spin_tensor(b[:3]))

@@ -405,3 +405,65 @@ def test_relaxed_efg_contact_density_levels():
               % (name, numpy.einsum('ij,ji', o, d_model).real,
                  numpy.einsum('ij,ji', o, d_model + d_un).real, relaxed.real, ff))
         assert abs(relaxed.real - ff) < 1e-6 * abs(relaxed.real), (name, relaxed, ff)
+
+
+@pytest.mark.slow
+def test_relaxed_spinor_frozen_core():
+    '''The relaxed density with a frozen core (O 1s, frozen_partition: the lowest
+    eigenvectors of the averaged generalized Fock matrix in the core) against finite fields
+    with the CASSCF, the partition and the NEVPT2 redone in the field: water 6-31G, SA-4,
+    the ground state; and the frozen-core rotations' multipliers present (nonzero).'''
+    from pyscf import gto
+    from socutils.fci import zfci
+    from socutils.mcscf import zmcscf, zmc_response
+    from socutils.scf import spinor_hf
+    from socutils.zmr import spinor_relaxed
+    nroots, nf = 4, 2
+    weights = [1.0 / nroots] * nroots
+    mol = gto.M(atom='O 0 0 0.1173; H 0 0.7172 -0.4892; H 0 -0.8072 -0.4492',
+                basis='6-31g', verbose=0)
+    mf = spinor_hf.KRHF(mol).density_fit()
+    mf.kernel()
+    cderi = mf.with_df._cderi
+    h0 = mf.get_hcore()
+    r = mol.intor('int1e_r_spinor')
+    op = r[0] + 0.7 * r[1] + 0.3 * r[2]
+
+    def casscf(h, mo0):
+        mc = zmcscf.CASSCF(mf, 8, 4)
+        mc.fcisolver = zfci.FCISolver(mol)
+        mc.fcisolver.nroots = nroots
+        mc = mc.state_average_(weights)
+        mc.get_hcore = lambda *a: h
+        mc.conv_tol = 1e-11
+        mc.conv_tol_grad = 1e-6
+        mc.verbose = 0
+        mc.kernel(mo0)
+        mo, ci, gn = zmc_response.polish(mc, mc.mo_coeff, list(mc.ci), weights, tol=1e-12,
+                                         verbose=False)
+        assert gn < 1e-10
+        return mc, mo, ci
+
+    def e_state(h, mo0, k=0):
+        mc, mo, ci = casscf(h, mo0)
+        e_cas = zmc_response.sa_energy(mc, mo, [ci[k]], [1.0])
+        saved = mf.get_hcore
+        mf.get_hcore = lambda *a: h
+        try:
+            mo_f, _ = spinor_relaxed.frozen_partition(mf, mc, mo, ci, weights, nf, cderi)
+            pt = spinor_relaxed.build_pt(mf, mc, mo_f, ci[k][:, None], cderi, nfrozen=nf)
+        finally:
+            mf.get_hcore = saved
+        return e_cas + sum(v[0, 0] for v in pt.h2_by_class.values()).real
+
+    mc, mo, ci = casscf(h0, mf.mo_coeff)
+    dm = spinor_relaxed.relaxed_rdm1(mc, mf, mo, ci, weights, state=0, cderi=cderi,
+                                     nfrozen=nf)
+    dm_all = spinor_relaxed.relaxed_rdm1(mc, mf, mo, ci, weights, state=0, cderi=cderi)
+    relaxed = numpy.einsum('ij,ji', op, dm)
+    h = 2e-5
+    ff = (e_state(h0 + h * op, mo) - e_state(h0 - h * op, mo)) / (2 * h)
+    print('frozen core: relaxed %.8f finite field %.8f (all electrons correlated: %.8f)'
+          % (relaxed.real, ff, numpy.einsum('ij,ji', op, dm_all).real))
+    assert abs(relaxed.imag) < 1e-10
+    assert abs(relaxed.real - ff) < 1e-6, (relaxed, ff)

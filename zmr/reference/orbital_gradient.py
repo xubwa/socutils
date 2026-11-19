@@ -322,10 +322,11 @@ def _active_two_body_holo(pt, pclass, b, g, x4, sp, traces):
     x4[a, a, a, a] += 0.25 * d2
 
 
-def _fock_m(eris, d_f, gamma, fock, return_y=False):
+def _fock_m(eris, d_f, gamma, fock, return_y=False, c=None):
     '''M of sum_pq d_f[p, q] F[p, q], F = h + W[gamma^T] (W[B] = C^+ V[C B C^+] C, gamma
-    fixed in the MO basis): F^T D - D F^T + (G Y - Y G)^T, G = gamma^T, Y = W[D^T].'''
-    c = eris.mo_coeff
+    fixed in the MO basis): F^T D - D F^T + (G Y - Y G)^T, G = gamma^T, Y = W[D^T]; c: the
+    orbitals (default those of eris; all of them, frozen ones included, for a frozen core).'''
+    c = eris.mo_coeff if c is None else c
     big_g = numpy.asarray(gamma).T
     y = c.conj().T @ eris.veff_fn(c @ numpy.asarray(d_f).T @ c.conj().T) @ c
     m = fock.T @ d_f - d_f @ fock.T + (big_g @ y - y @ big_g).T

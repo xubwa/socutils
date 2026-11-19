@@ -26,12 +26,12 @@ import numpy
 from pyscf import lib as pyscf_lib
 
 
-def ao_back(eris, gam, space='v', out_space='c'):
-    '''T1[r, i] = sum_{P x} B[P, r, x] G[P, x, i] for all orbitals r, G[P, x, i] with x in
-    space (back-transformed to the AO basis) and i in out_space, from the AO vectors of
-    the factorized source, block by block.'''
+def ao_back(eris, gam, space='v', out_space='c', rows=None):
+    '''T1[r, i] = sum_{P x} B[P, r, x] G[P, x, i] for all orbitals r (or the orbitals rows,
+    e.g. frozen ones), G[P, x, i] with x in space (back-transformed to the AO basis) and i
+    in out_space, from the AO vectors of the factorized source, block by block.'''
     fn = eris.eri_fn
-    c_all = fn.components(eris.mo_coeff)
+    c_all = fn.components(eris.mo_coeff if rows is None else rows)
     c_x = fn.components(eris.coeff(space))
     nao = fn.nao
     ni = gam.shape[2]
@@ -65,23 +65,36 @@ def _b_all(eris, space):
     return eris.cd_pc if space == 'c' else eris.cd_pa
 
 
-def _t_block(eris, space, gm):
-    '''T[r, q] = sum_{P, s in space} B[P, r, s] gm[P, s, q] for all orbitals r.'''
+def _t_block(eris, space, gm, rows=None):
+    '''T[r, q] = sum_{P, s in space} B[P, r, s] gm[P, s, q] for all orbitals r, or for
+    the orbitals rows (coefficients) outside the correlated space.'''
     if space == 'v':
-        return ao_back(eris, gm, 'v')
-    return numpy.einsum('Prs,Psq->rq', _b_all(eris, space), gm, optimize=True)
+        return ao_back(eris, gm, 'v', rows=rows)
+    if rows is None:
+        b = _b_all(eris, space)
+    else:
+        cx = eris.coeff(space)
+        b = numpy.asarray(eris.eri_fn.pair(rows, cx)).reshape(-1, rows.shape[1], cx.shape[1])
+    return numpy.einsum('Prs,Psq->rq', b, gm, optimize=True)
 
 
-def explicit_c(eris, gam, x, y):
+def explicit_c(eris, gam, x, y, frozen=None):
     '''X = sum_P conj(B_P) G_P for the holomorphic block G_h = gam[P, x, y] and its
     conjugate block (y, x): X[:, y] = conj(T_x(conj(G_h))), X[:, x] = conj(T_y(G_h^T)).
-    For real orbitals explicit_block(gam).'''
+    For real orbitals explicit_block(gam).  frozen: coefficients of orbitals outside the
+    correlated space (frozen core), whose rows are put first ((nf + n, n)).'''
     sp = eris.spaces
     n = sp.nmo
-    out = numpy.zeros((n, n), dtype=numpy.complex128)
+    nf = 0 if frozen is None else frozen.shape[1]
+    out = numpy.zeros((nf + n, n), dtype=numpy.complex128)
     gam = numpy.asarray(gam)
-    out[:, sp.slice(y)] += _t_block(eris, x, numpy.ascontiguousarray(gam.conj())).conj()
-    out[:, sp.slice(x)] += _t_block(eris, y, numpy.ascontiguousarray(gam.transpose(0, 2, 1))).conj()
+    gc = numpy.ascontiguousarray(gam.conj())
+    gt = numpy.ascontiguousarray(gam.transpose(0, 2, 1))
+    out[nf:, sp.slice(y)] += _t_block(eris, x, gc).conj()
+    out[nf:, sp.slice(x)] += _t_block(eris, y, gt).conj()
+    if nf:
+        out[:nf, sp.slice(y)] += _t_block(eris, x, gc, rows=frozen).conj()
+        out[:nf, sp.slice(x)] += _t_block(eris, y, gt, rows=frozen).conj()
     return out
 
 
@@ -242,7 +255,7 @@ def active_two_body(pt, pclass, b, g, state=0, traces=None):
     return 0.25 * d2
 
 
-def derivatives(pt, state=0, max_memory=4000, rho=None):
+def derivatives(pt, state=0, max_memory=4000, rho=None, frozen_coeff=None):
     '''One pass over the classes of a finished PC-NEVPT2 of one model state: the
     unrelaxed density (quasi-canonical orbitals), the orbital gradient at fixed CI vector
     (quasi-canonical orbitals), and the vector g of the CI gradient, dE2 = 2 <dPsi|g>
@@ -252,7 +265,11 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     several targets (all levels) in the same pass, a list of the results.  Real orbitals.
     Returns {'d', 'grad', 'g_ci', 'u'}: grad the anti-Hermitian M with dE2 = sum M K for
     orbitals C (1 + K) in the quasi-canonical orbitals (zmr.reference.orbital_gradient.
-    gradient_general; for real orbitals pack(M - M^T) is the PySCF gradient).'''
+    gradient_general; for real orbitals pack(M - M^T) is the PySCF gradient).
+    frozen_coeff: the AO coefficients of the frozen-core orbitals folded into the
+    integrals (pt.eris0.hcore_ao); grad is then over the frozen orbitals (first) and the
+    quasi-canonical correlated ones: its frozen rows and columns are the rotations of the
+    frozen orbitals into the correlated ones.'''
     from socutils.zmr.reference import ci_gradient as cg
     from socutils.zmr.reference import orbital_gradient as og
     from socutils.zmr.uc import classes, density
@@ -313,16 +330,42 @@ def derivatives(pt, state=0, max_memory=4000, rho=None):
     gam_gen[sp.slice('a'), sp.slice('a')] = numpy.asarray(pt.gamma)
     gam_core = numpy.zeros((n, n), dtype=c16)
     gam_core[sp.slice('c'), sp.slice('c')] = numpy.eye(sp.ncore)
+    nf = 0 if frozen_coeff is None else frozen_coeff.shape[1]
+    if nf:
+        # the Fock chains over all orbitals: the frozen ones occupied in both Fock matrices
+        c_full = numpy.hstack([frozen_coeff, eris.mo_coeff])
+
+        def pad(x, occ):
+            out = numpy.zeros((nf + n, nf + n), dtype=c16)
+            out[nf:, nf:] = x
+            if occ:
+                out[:nf, :nf] = numpy.eye(nf)
+            return out
+
+        def fock_full(dm):
+            return c_full.conj().T @ (eris.hcore_ao + eris.veff_fn(dm)) @ c_full
+        cc = eris.coeff('c')
+        f_gen_full = fock_full(eris._dm(pt.gamma))
+        f_core_full = fock_full(cc @ cc.conj().T)
+        g_gen_full, g_core_full = pad(gam_gen, True), pad(gam_core, True)
     out = []
     for lv in range(nl):
         _add(gams[lv], ('a', 'a'), numpy.einsum('tuvw,Pvw->Ptu',
                                                 x_aa[lv] + x_aa[lv].transpose(2, 3, 0, 1), baa))
-        xm = numpy.zeros((n, n), dtype=c16)
+        xm = numpy.zeros((nf + n, nf + n), dtype=c16)
         for (x, y), gam in gams[lv].items():
-            xm += explicit_c(eris, gam, x, y)
-        # the generalized Fock matrix of the denominators and the core Fock matrix are known
-        m_gen, w_gen = og._fock_m(eris, d_gen[lv], gam_gen, qc.fock, return_y=True)
-        grad = xm - xm.conj().T + m_gen + og._fock_m(eris, d_core[lv], gam_core, ctx.fcore)
+            xm[:, nf:] += explicit_c(eris, gam, x, y, frozen=frozen_coeff)
+        if nf:
+            m_gen, w_full = og._fock_m(eris, pad(d_gen[lv], False), g_gen_full, f_gen_full,
+                                       return_y=True, c=c_full)
+            m_core = og._fock_m(eris, pad(d_core[lv], False), g_core_full, f_core_full,
+                                c=c_full)
+            w_gen = w_full[nf:, nf:]
+        else:
+            # the generalized Fock matrix of the denominators and the core Fock matrix are known
+            m_gen, w_gen = og._fock_m(eris, d_gen[lv], gam_gen, qc.fock, return_y=True)
+            m_core = og._fock_m(eris, d_core[lv], gam_core, ctx.fcore)
+        grad = xm - xm.conj().T + m_gen + m_core
         if rho is None:
             g_ci[lv, 0] += cg.fock_g(pt, ctx, d_gen[lv], state, w=w_gen)
         else:
