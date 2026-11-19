@@ -280,3 +280,56 @@ def test_qd_levels_in_one_pass():
         # the derivatives agree to round-off (above); the densities to the iterative
         # Z-vector (rtol 1e-10), whose condition is poor here (near-dependent ccav functions)
         assert abs(dms[k] - relaxed.relaxed_rdm1_level(mc, cderi, k)).max() < 1e-6
+
+
+@pytest.mark.slow
+def test_relaxed_levels_degenerate_scalar():
+    '''Levels of the multi-state PC-NEVPT2 on an SA-CASSCF with a degenerate pair (CH+,
+    X 1Sigma+ and the two components of A 1Pi, equal weights): relaxed_rdm1_levels (the
+    pair averaged; its rotations and mixings zero modes of the Z-vector equations) against
+    finite fields along the axis, which keep the pair degenerate.'''
+    from socutils.zmr.interface import pyscf_nr
+    from socutils.zmr.nr import PCNEVPT2 as NRPC
+    from socutils.zmr.nr import relaxed
+    from socutils.zmr.reference import relaxed_fd as rf
+    mol = gto.M(atom='C 0 0 0; H 0 0 1.12', basis='6-31g', charge=1, verbose=0)
+    cderi = incore.cholesky_eri(mol, auxbasis=AUX)
+    q = mol.atom_charges()
+    with mol.with_common_orig((q[:, None] * mol.atom_coords()).sum(0) / q.sum()):
+        op = mol.intor('int1e_r')[2]
+    h0 = scf.RHF(mol).get_hcore()
+    weights = [1 / 3.] * 3
+
+    def casscf(h, mo0=None, ci0=None):
+        mf = scf.RHF(mol).density_fit(auxbasis=AUX)
+        mf.get_hcore = lambda *a: h
+        mf.conv_tol = 1e-13
+        mf.kernel()
+        mc = mcscf.CASSCF(mf, 4, 2)
+        mc.fix_spin_(ss=0)
+        mc = mc.state_average_(weights)
+        mc.conv_tol = 1e-12
+        mc.conv_tol_grad = 1e-6
+        mc.max_cycle_macro = 300
+        mc.kernel(mo0, ci0)
+        return rf.polish(mc)
+
+    def levels(mc, h):
+        eris = pyscf_nr.nr_eris(mol, h, mc.mo_coeff, 0, mc.ncore, mc.ncas, cderi=cderi)
+        pt = NRPC(eris, (1, 1), civecs=numpy.array([c.ravel() for c in mc.ci]).T,
+                  weights=weights, e0='state', contraction='union')
+        pt.verbose = 0
+        return numpy.sort(numpy.asarray(pt.kernel()).real)
+
+    mc = casscf(h0)
+    e0 = levels(mc, h0)
+    assert abs(e0[1] - e0[2]) < 1e-8 and e0[1] - e0[0] > 1e-3, e0     # Sigma, Pi pair
+    dms = relaxed.relaxed_rdm1_levels(mc, cderi)
+    lv = []
+    for sgn in (1, -1):
+        m2 = casscf(h0 + sgn * 1e-4 * op, mc.mo_coeff, list(mc.ci))
+        lv.append(levels(m2, h0 + sgn * 1e-4 * op))
+    ff = (lv[0] - lv[1]) / 2e-4
+    for k in range(3):
+        relaxed_k = numpy.einsum('ij,ji', op, dms[k])
+        assert abs(relaxed_k - ff[k]) < 1e-6, (k, relaxed_k, ff[k])

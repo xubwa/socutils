@@ -26,19 +26,36 @@ from socutils.zmr.uc import density as uc_density
 from socutils.zmr.uc import gradient as uc_gradient
 
 
-def _null_space(mc):
+def _null_space(mc, tol=1e-9):
     '''Orthonormal columns spanning the zero modes of the Jacobian of the gradient: the
-    norm of every CI vector.  (The rotations among the averaged states are not zero modes
-    of the Jacobian: the CI gradients w_I (H - E_I) c_I couple them with the symmetric
-    mixings c_I + t c_J, c_J + t c_I; together they fix the model states as eigenvectors.)'''
+    norm of every CI vector, and the rotations and symmetric mixings among averaged states
+    of equal energy and weight (degenerate states: their coupling ~ w (E_J - E_I)
+    vanishes, and the mixings would change the averaged density).  (The rotations among
+    non-degenerate states are not zero modes: the CI gradients w_I (H - E_I) c_I couple
+    them with the symmetric mixings; together they fix the model states as eigenvectors.)'''
     ci = rf._ci_list(mc)
     n = rf.ngorb(mc)
     sizes = [c.size for c in ci]
     offs = n + numpy.concatenate([[0], numpy.cumsum(sizes)])
-    vecs = numpy.zeros((offs[-1], len(ci)))
+    cols = []
     for k, c in enumerate(ci):
-        vecs[offs[k]:offs[k + 1], k] = c.ravel() / numpy.linalg.norm(c)
-    return vecs
+        v = numpy.zeros(offs[-1])
+        v[offs[k]:offs[k + 1]] = c.ravel()
+        cols.append(v)
+    if len(ci) > 1:
+        e = rf.state_energies(mc, mc.mo_coeff, ci)
+        w = rf._weights(mc)
+        for i in range(len(ci)):
+            for j in range(i):
+                if abs(e[i] - e[j]) > tol or abs(w[i] - w[j]) > 1e-12:
+                    continue
+                for sgn in (1.0, -1.0):
+                    v = numpy.zeros(offs[-1])
+                    v[offs[i]:offs[i + 1]] = ci[j].ravel()
+                    v[offs[j]:offs[j + 1]] = sgn * ci[i].ravel()
+                    cols.append(v)
+    u, sv, _ = numpy.linalg.svd(numpy.array(cols).T, full_matrices=False)
+    return u[:, sv > 1e-10 * sv.max()]
 
 
 def zvector(mc, rhs, tol=1e-10, maxiter=500):
@@ -170,7 +187,8 @@ def qd_derivatives(pt, rho):
     return {'d': d, 'grad': grad, 'g': g, 'u': u}
 
 
-def relaxed_rdm1_levels(mc, cderi, levels=None, max_memory=4000, return_parts=False):
+def relaxed_rdm1_levels(mc, cderi, levels=None, max_memory=4000, return_parts=False,
+                        degeneracy_tol=1e-8):
     '''AO densities of levels of the multi-state PC-NEVPT2 (union contraction, the
     zeroth-order energy of every state) on all states of the state-averaged CASSCF mc,
     whose expectation values are the derivatives of the eigenvalues `levels` (ascending;
@@ -187,11 +205,16 @@ def relaxed_rdm1_levels(mc, cderi, levels=None, max_memory=4000, return_parts=Fa
     levels = list(range(len(e))) if levels is None else list(levels)
     rhos = []
     for k in levels:
-        ck = vec[:, k]
-        ck = ck * abs(ck[abs(ck).argmax()]) / ck[abs(ck).argmax()]
-        if abs(ck.imag).max() > 1e-10 * abs(ck).max():
-            raise NotImplementedError('real model states only')
-        rhos.append(numpy.outer(ck.real, ck.real))
+        # a degenerate level: the average over its multiplet (invariant to the basis of it)
+        group = numpy.nonzero(abs(e - e[k]) < degeneracy_tol)[0]
+        rho = 0
+        for n in group:
+            ck = vec[:, n]
+            ck = ck * abs(ck[abs(ck).argmax()]) / ck[abs(ck).argmax()]
+            if abs(ck.imag).max() > 1e-10 * abs(ck).max():
+                raise NotImplementedError('real model states only')
+            rho = rho + numpy.outer(ck.real, ck.real) / len(group)
+        rhos.append(rho)
     outs = uc_gradient.derivatives(pt, max_memory=max_memory, rho=numpy.array(rhos))
     idx = sector_index(pt.active_space.norb // 2, route.nelec_ab)
     mo = mc.mo_coeff
