@@ -17,7 +17,6 @@ those of the zmr spinor sector.
 '''
 
 import numpy
-from pyscf.fci import fci_dhf_slow
 
 from socutils.mcscf import zmc_response
 from socutils.zmr.interface import socutils_x2c
@@ -76,8 +75,13 @@ def frozen_partition(mf, mc, mo, ci, weights, nfrozen, cderi=None):
     if nfrozen == 0:
         return mo, None
     cderi = mf.with_df._cderi if cderi is None else cderi
-    gamma = sum(w * fci_dhf_slow.make_rdm12(numpy.asarray(c, dtype=complex).ravel(), mc.ncas,
-                                            mc.nelecas)[0] for w, c in zip(weights, ci))
+    from socutils.zmr.active import rdm as active_rdm
+    from socutils.zmr.active.sectors import ActiveSpace
+    na = mc.ncas
+    cas = ActiveSpace(numpy.zeros((na, na)), numpy.zeros((na,) * 4), 0.0)
+    cmat = numpy.array([numpy.asarray(c, dtype=complex).ravel() for c in ci]).T
+    d1 = active_rdm.make_rdm(cas, cmat, mc.nelecas, 1)
+    gamma = sum(w * d1[i, i] for i, w in enumerate(weights))
     eris0 = socutils_x2c.mo_eris(mf, mf.mol, mo, 0, ncore, mc.ncas, cderi=cderi)
     f = eris0.generalized_fock(gamma)
     e, v = numpy.linalg.eigh(0.5 * (f[:ncore, :ncore] + f[:ncore, :ncore].conj().T))
@@ -126,11 +130,9 @@ def _e2_terms(mc, mf, mo, resp, out, nfrozen, states):
         mz, y = og._fock_m(eris0, dz, gam, f, return_y=True, c=mo)
         m = m + mz
         d = d + dz
-        h2e = fci_dhf_slow.absorb_h1e(y[act, act], numpy.zeros((ncas,) * 4, dtype=complex),
-                                      ncas, mc.nelecas, .5)
-        for j, (w, c) in enumerate(zip(resp.weights, resp.ci)):
-            gz = w * resp._h(h2e, c)
-            g_states[j] = g_states.get(j, 0) + gz
+        fc = resp.apply_h1(y[act, act], numpy.array(resp.ci).T).T
+        for j, (w, gz) in enumerate(zip(resp.weights, fc)):
+            g_states[j] = g_states.get(j, 0) + w * gz
     p, q = numpy.nonzero(mc.uniq_var_indices(n_all, mc.ncore, mc.ncas, mc.frozen))
     g_orb = numpy.conj(m[p, q]) - m[q, p]
     g_parts = {j: 2 * (g - numpy.vdot(resp.ci[j], g).real * resp.ci[j]) for j, g in g_states.items()}

@@ -28,11 +28,41 @@ first-order change of the active Hamiltonian (h_eff and (tu|vw)) under the rotat
 At a stationary point the zero modes are the norm (c_I) and the phase (i c_I) of every
 CI vector (elsewhere J c_I = -G_I, J i c_I = i G_I: E is invariant, its gradient is not);
 the rotations among the averaged states are not zero modes of J.
+
+The CI-space work (H_act and its first-order change applied to vectors, transition density
+matrices) runs on the native kernels of zmr (zmr.active.sectors.ActiveSpace.sigma,
+zmr.active.rdm.make_rdm), in the determinant order and density layout of socutils.fci.zfci.
 '''
 import numpy
 from pyscf import lib
-from pyscf.fci import fci_dhf_slow
 from socutils.mcscf import zmc_ao2mo, zmc_twostep
+
+
+def _active_space(h1, eri):
+    from socutils.zmr.active.sectors import ActiveSpace
+    n = h1.shape[0]
+    return ActiveSpace(h1, numpy.asarray(eri).reshape((n,) * 4), 0.0)
+
+
+def _sigma(act, nelec, vecs):
+    '''H_act vecs (a vector or columns) by the native sigma kernel.'''
+    v = numpy.asarray(vecs, dtype=complex)
+    if v.ndim == 1:
+        return act.sigma(nelec, v[:, None])[:, 0]
+    return act.sigma(nelec, numpy.ascontiguousarray(v))
+
+
+def _rdm(act, nelec, vecs, k, bra=None, ket=None):
+    from socutils.zmr.active import rdm
+    return rdm.make_rdm(act, numpy.asarray(vecs, dtype=complex), nelec, k, bra=bra, ket=ket)
+
+
+def _sym_rdm12(act, nelec, a, b):
+    '''B(a, b) + B(b, a) of the 1- and 2-RDMs (B(x, y) = <x|...|y>).'''
+    v = numpy.array([a, b]).T
+    d1 = _rdm(act, nelec, v, 1)
+    d2 = _rdm(act, nelec, v, 2)
+    return d1[0, 1] + d1[1, 0], d2[0, 1] + d2[1, 0]
 
 
 def realify(z):
@@ -67,11 +97,15 @@ class SAResponse:
         self.hvc = h + vc
         self.h1eff = self.hvc[self.act, self.act]
         self.eri = numpy.asarray(eris.aaaa).reshape((ncas,) * 4)
-        self.h2e = fci_dhf_slow.absorb_h1e(self.h1eff, self.eri, ncas, self.nelec, .5)
-        self.hc = [self._h(self.h2e, c) for c in self.ci]
+        self.cas = _active_space(self.h1eff, self.eri)
+        cmat = numpy.array(self.ci).T
+        self.hc = list(_sigma(self.cas, self.nelec, cmat).T)
         self.e = numpy.array([numpy.vdot(c, hc).real for c, hc in zip(self.ci, self.hc)])
         self.r = [hc - e * c for c, hc, e in zip(self.ci, self.hc, self.e)]
-        self.dms = [self._rdm12(c) for c in self.ci]
+        # all (transition) density matrices among the states at once
+        self.tdm1 = _rdm(self.cas, self.nelec, cmat, 1)
+        self.tdm2 = _rdm(self.cas, self.nelec, cmat, 2)
+        self.dms = [(self.tdm1[i, i], self.tdm2[i, i]) for i in range(len(self.ci))]
         dm1 = sum(w * d[0] for w, d in zip(self.weights, self.dms))
         dm2 = sum(w * d[1] for w, d in zip(self.weights, self.dms))
         self.dm1, self.dm2 = dm1, dm2
@@ -87,11 +121,16 @@ class SAResponse:
         self.cd_aa = numpy.asarray(eris.cd_aa).reshape(self.naux, ncas, ncas)
 
     # -- helpers -------------------------------------------------------------------
-    def _h(self, h2e, c):
-        return fci_dhf_slow.contract_2e(h2e, c, self.ncas, self.nelec)
+    def apply(self, h1, eri, vecs):
+        '''(sum h1 t^+ u + 1/2 sum eri t^+ v^+ w u) vecs in the active space.'''
+        return _sigma(_active_space(h1, eri), self.nelec, vecs)
+
+    def apply_h1(self, h1, vecs):
+        return self.apply(h1, numpy.zeros((self.ncas,) * 4, dtype=complex), vecs)
 
     def _rdm12(self, c):
-        return fci_dhf_slow.make_rdm12(c, self.ncas, self.nelec)
+        c = numpy.asarray(c, dtype=complex)
+        return _rdm(self.cas, self.nelec, c, 1)[0, 0], _rdm(self.cas, self.nelec, c, 2)[0, 0]
 
     def split(self, z):
         out = [z[:self.n_orb]]
@@ -135,11 +174,10 @@ class SAResponse:
         for w, c, y, (d1, d2) in zip(self.weights, self.ci, ys, self.dms):
             if not numpy.any(y):
                 continue
-            p1, p2 = self._rdm12(c + y)
-            m1, m2 = self._rdm12(c - y)
+            s1, s2 = _sym_rdm12(self.cas, self.nelec, c, y)
             s = 2 * numpy.vdot(c, y).real
-            ddm1 += w * (0.5 * (p1 - m1) - s * d1)
-            ddm2 += w * (0.5 * (p2 - m2) - s * d2)
+            ddm1 += w * (s1 - s * d1)
+            ddm2 += w * (s2 - s * d2)
         if numpy.any(ddm1) or numpy.any(ddm2):
             out_o = out_o + 2 * self.g_lin(ddm1, ddm2)
         # first-order active Hamiltonian of the rotation
@@ -148,12 +186,13 @@ class SAResponse:
         l1 = parts['l1_aa'].reshape(self.naux, ncas, ncas)
         eri1 = (lib.einsum('ptu,pvw->tuvw', l1, self.cd_aa)
                 + lib.einsum('ptu,pvw->tuvw', self.cd_aa, l1))
-        h2e1 = fci_dhf_slow.absorb_h1e(h1eff1, eri1, ncas, nelec, .5)
+        h1c_all = self.apply(h1eff1, eri1, numpy.array(self.ci).T).T
+        hy_all = _sigma(self.cas, nelec, numpy.array(ys).T).T
         out_c = []
-        for w, c, y, r, e in zip(self.weights, self.ci, ys, self.r, self.e):
-            h1c = self._h(h2e1, c)
+        for w, c, y, r, e, h1c, hy in zip(self.weights, self.ci, ys, self.r, self.e,
+                                           h1c_all, hy_all):
             v = h1c - numpy.vdot(c, h1c) * c
-            v = v + (self._h(self.h2e, y) - e * y - 2 * numpy.vdot(r, y).real * c
+            v = v + (hy - e * y - 2 * numpy.vdot(r, y).real * c
                      - 2 * numpy.vdot(c, y).real * r)
             out_c.append(2 * w * v)
         return self.join([out_o] + out_c)
@@ -182,12 +221,11 @@ def sa_energy(mc, mo, ci, weights, cderi=None):
     vc = lib.dot(mo.conj().T, lib.dot(eris.vj_core - eris.vk_core, mo))
     ecore = (mc.energy_nuc() + numpy.trace(h[:ncore, :ncore])
              + 0.5 * numpy.trace(vc[:ncore, :ncore])).real
-    eri = numpy.asarray(eris.aaaa).reshape((ncas,) * 4)
-    h2e = fci_dhf_slow.absorb_h1e((h + vc)[act, act], eri, ncas, mc.nelecas, .5)
+    cas = _active_space((h + vc)[act, act], eris.aaaa)
     out = 0.0
     for w, c in zip(weights, ci):
         c = numpy.asarray(c, dtype=complex).ravel()
-        hc = fci_dhf_slow.contract_2e(h2e, c, ncas, mc.nelecas)
+        hc = _sigma(cas, mc.nelecas, c)
         out += w * (numpy.vdot(c, hc).real / numpy.vdot(c, c).real + ecore)
     return out
 
@@ -279,9 +317,9 @@ def lagrangian_density(resp, z):
     d = mo_density(resp, resp.dm1)
     dd = k @ d - d @ k
     for w, c, y, (d1, _) in zip(resp.weights, resp.ci, ys, resp.dms):
-        p1 = resp._rdm12(c + y)[0]
-        m1 = resp._rdm12(c - y)[0]
-        g = 0.5 * (p1 - m1) - 2 * numpy.vdot(c, y).real * d1
+        v = numpy.array([c, y]).T
+        t1 = _rdm(resp.cas, resp.nelec, v, 1)
+        g = t1[0, 1] + t1[1, 0] - 2 * numpy.vdot(c, y).real * d1
         dd[resp.act, resp.act] += w * numpy.asarray(g).T
     return ao_density(resp, dd)
 
@@ -313,12 +351,11 @@ def model_eigenvectors(mc, mo, ci, cderi=None):
     act = slice(ncore, ncore + ncas)
     h = lib.dot(mo.conj().T, lib.dot(mc.get_hcore(), mo))
     vc = lib.dot(mo.conj().T, lib.dot(eris.vj_core - eris.vk_core, mo))
-    eri = numpy.asarray(eris.aaaa).reshape((ncas,) * 4)
-    h2e = fci_dhf_slow.absorb_h1e((h + vc)[act, act], eri, ncas, mc.nelecas, .5)
+    cas = _active_space((h + vc)[act, act], eris.aaaa)
     c = numpy.array([numpy.asarray(x, dtype=complex).ravel() for x in ci])
     w, v = numpy.linalg.eigh(c.conj() @ c.T)
     c = (v / numpy.sqrt(w)) @ v.conj().T @ c
-    hc = numpy.array([fci_dhf_slow.contract_2e(h2e, x, ncas, mc.nelecas) for x in c])
+    hc = _sigma(cas, mc.nelecas, c.T).T
     hm = c.conj() @ hc.T
     _, u = numpy.linalg.eigh(0.5 * (hm + hm.conj().T))
     new = u.T @ c
@@ -356,32 +393,19 @@ def polish(mc, mo, ci, weights, tol=1e-10, max_cycle=15, cderi=None, verbose=Tru
 # targets in the model space of a multi-state method: sum_IJ rho_IJ hmodel_IJ
 
 def transition_rdm12(resp, bra, ket):
-    '''(dm1, dm2) of <bra|...|ket> (the layout of make_rdm12, conjugate-linear in bra), by
-    polarization: B(x, y) = 1/4 sum_k conj(i^k) D(x + i^k y).'''
-    out1, out2 = 0, 0
-    for k in range(4):
-        f = 1j ** k
-        d1, d2 = resp._rdm12(bra + f * ket)
-        out1 = out1 + 0.25 * numpy.conj(f) * d1
-        out2 = out2 + 0.25 * numpy.conj(f) * d2
-    return out1, out2
+    '''(dm1, dm2) of <bra|...|ket> (the layout of zfci make_rdm12, conjugate-linear in
+    bra).'''
+    v = numpy.array([bra, ket]).T
+    return (_rdm(resp.cas, resp.nelec, v, 1, bra=0, ket=1),
+            _rdm(resp.cas, resp.nelec, v, 2, bra=0, ket=1))
 
 
 def model_rdm12(resp, rho):
-    '''sum_IJ rho_IJ <c_I|...|c_J> (rho Hermitian).'''
-    dm1 = numpy.zeros_like(resp.dm1)
-    dm2 = numpy.zeros_like(resp.dm2)
-    for i, ci in enumerate(resp.ci):
-        for j, cj in enumerate(resp.ci):
-            if abs(rho[i, j]) < 1e-15:
-                continue
-            if i == j:
-                d1, d2 = resp.dms[i]
-            else:
-                d1, d2 = transition_rdm12(resp, ci, cj)
-            dm1 = dm1 + rho[i, j] * d1
-            dm2 = dm2 + rho[i, j] * d2
-    return dm1, dm2
+    '''sum_IJ rho_IJ <c_I|...|c_J> (rho Hermitian), from the transition density matrices
+    of resp.'''
+    rho = numpy.asarray(rho)
+    return (numpy.einsum('ij,ijpq->pq', rho, resp.tdm1),
+            numpy.einsum('ij,ijpqrs->pqrs', rho, resp.tdm2))
 
 
 def model_gradient(resp, rho):
