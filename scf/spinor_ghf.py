@@ -91,6 +91,8 @@ def to_ghf_tda(td):
     tdg.e = td.e
     tdg.xy = td.xy
     tdg.converged = td.converged
+    # the spinor TDA whose response (RIJ / COSX J / K, fused f_xc) the fast gradient uses (grad.tdghf_fast)
+    tdg._spinor_td = td
     return tdg
 
 
