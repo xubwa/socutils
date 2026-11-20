@@ -40,7 +40,9 @@ from pyscf.lib import logger
 from pyscf.scf import hf
 
 ENABLE = True
-PIECE_TOL = 1e-14       # relative size below which a scalar piece of Q[H] is dropped
+# relative size below which a scalar piece of Q[H] is dropped: its share of Q is second order (<= 1e-16); the parts
+# that vanish for an exactly Kramers-paired matrix stay at the numerical pairing (~1e-9 .. 1e-7)
+PIECE_TOL = 1e-8
 
 
 # ---------------------------------------------------------------- quadratic forms
