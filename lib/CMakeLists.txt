@@ -14,6 +14,7 @@
 #   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear multi-collinear XC kernel)
 #   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf screened SR integrals over images)
 #   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
+#   zgasci  ->  lib/libzgasci.so      (socutils.hci.gasci FCI / GAS-CI kernels)
 #
 # x2camf (the C implementation, import x2camf) and zquatev (Kramers-restricted
 # spinor SCF) are separate repositories, built with ExternalProject into
@@ -120,6 +121,7 @@ add_subdirectory(vhf)
 add_subdirectory(dft)
 add_subdirectory(pbcdf)
 add_subdirectory(thc)
+add_subdirectory(zgasci)
 
 # --- external libraries: x2camf (C implementation) and zquatev ----------------
 # Built from their own repositories with ExternalProject, as pyscf/lib does for
