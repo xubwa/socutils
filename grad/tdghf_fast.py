@@ -351,8 +351,10 @@ def _hcore_grad(td_grad, mol, Wh):
 # ---------------------------------------------------------------- Z-vector
 ZVECTOR_TOL = 1e-7      # relative residual of the Z-vector equation
 # spinor COSX reference: first on the TDA's coarse operator (COSX on td.coarse_grid, f_xc on
-# td.coarse_fxc_grids) to td.coarse_tol x ZVECTOR_TOL, then the residual equation on the final operator
-ZVECTOR_COARSE = True
+# td.coarse_fxc_grids) to td.coarse_tol x ZVECTOR_TOL, then the residual equation on the final operator.  Off:
+# BiPh3 RIJ+COSX 18 coarse + 15 final responses (659 s) against 24 final ones (537 s); the coarse solution
+# leaves a residual of 2e-4 on the final operator
+ZVECTOR_COARSE = False
 ZVECTOR_MAX_CYCLE = 60
 
 
