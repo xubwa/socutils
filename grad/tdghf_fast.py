@@ -433,8 +433,12 @@ def grad_elec(td_grad, z, atmlst=None, verbose=logger.INFO):
     Fmo = numpy.diag(mo_energy).astype(numpy.complex128)     # canonical SCF orbitals
     X_g, D0_g = to_ghf(X), to_ghf(D0)
 
-    env = tds._response_env() if U is not None else td_grad._response_env()
-    with env:
+    import contextlib
+    from socutils.scf import spinor_jk
+    with contextlib.ExitStack() as env:
+        env.enter_context(tds._response_env() if U is not None else td_grad._response_env())
+        # single Hermitian densities below are response densities (spinor_jk: response grid, no SCF increments)
+        env.enter_context(spinor_jk.response_densities(mfs))
         vresp0 = mfs.gen_response(C, mo_occ, hermi=1)
         vresp_td = tds.gen_response(hermi=0)
         V = vresp_td(X.conj().T[None])[0]

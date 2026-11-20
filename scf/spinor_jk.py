@@ -40,6 +40,7 @@ the exact build (logged).  The direct RI-J engine needs rij_direct.available
 (bra l <= 3, aux l <= 6); md_j otherwise keeps the resident tensor or pyscf's
 DF J, so RIJ itself always works.
 '''
+import contextlib
 import numpy
 from pyscf import lib, scf
 from pyscf.lib import logger
@@ -337,13 +338,30 @@ def _cosx_wanted(mf, mol):
     return ok
 
 
+@contextlib.contextmanager
+def response_densities(mf):
+    '''inside: a single Hermitian density passed to mf's J / K is a response density (CPHF, Z-vector, a TDA
+    gradient's V_T), not an SCF density: the response COSX grid (RESPONSE_GRID) and the multi-density builds,
+    no incremental build off (and no update of) the SCF state.  Outside, one Hermitian density is the SCF's.'''
+    old = getattr(mf, '_jk_response', False)
+    mf._jk_response = True
+    try:
+        yield
+    finally:
+        mf._jk_response = old
+
+
+def _is_response(mf, n, hermi):
+    return n != 1 or hermi != 1 or getattr(mf, '_jk_response', False)
+
+
 def get_k_cosx(mf, mol, dm, hermi, aa, ab, ba, bb, cplx, kramers):
     '''COSX K of GHF densities (n, 2nao, 2nao); a single Hermitian density incrementally (state on mf)'''
     from socutils.scf import cosx
     n, nao = dm.shape[0], mol.nao_nr()
     st = _state(mf, mol)
     pieces = _pieces(aa, ab, ba, bb, cplx, kramers, hermi)
-    if n != 1 or hermi != 1:
+    if _is_response(mf, n, hermi):
         k = _kobj(mf, st, RESPONSE_GRID)
         if k is None:
             return _exact_k(_proxy(mf, mol), mol, pieces, n, nao, dm.dtype, kramers, hermi)
@@ -584,7 +602,8 @@ def _get_jk_fast(mf, mol, dms, hermi, with_j, with_k, m, aa, ab, ba, bb, cplx, k
             dj = numpy.concatenate([dj, (di + di.transpose(0, 2, 1)) * .5])
         dj = numpy.ascontiguousarray(dj)
         # one SCF density: 2-D (the incremental builds); response densities: the multi-density builds
-        J = numpy.asarray(p.get_jk(mol, dj[0] if hermi == 1 and dj.shape[0] == 1 else dj, 1, True, False)[0])
+        single = hermi == 1 and dj.shape[0] == 1 and not getattr(mf, '_jk_response', False)
+        J = numpy.asarray(p.get_jk(mol, dj[0] if single else dj, 1, True, False)[0])
         J = J.reshape(-1, nao, nao)
         if J.shape[0] == 2 * n:
             J = J[:n] + 1j * J[n:]

@@ -521,12 +521,21 @@ class SCF(SpinorPropertyMixin, hf.SCF):
 
         The spinor reference is a GHF/GKS reference in a complex n2c basis, so
         the GHF response template applies directly (J/K from the spinor get_jk,
-        f_xc from the 2-component numint).'''
+        f_xc from the 2-component numint).  The densities it is called with
+        are response densities also when there is a single Hermitian one (a
+        CPHF / Z-vector step): spinor_jk.response_densities, so the RIJ / COSX
+        builds take the response grid and no SCF increment.'''
         from pyscf.scf._response_functions import _gen_ghf_response
+        from socutils.scf import spinor_jk
         if isinstance(self, hf.KohnShamDFT) and self.do_nlc():
             raise NotImplementedError('NLC response is not implemented for the '
                                       'spinor (j-adapted) basis')
-        return _gen_ghf_response(self, *args, **kwargs)
+        vind = _gen_ghf_response(self, *args, **kwargs)
+
+        def vind_response(dm1):
+            with spinor_jk.response_densities(self):
+                return vind(dm1)
+        return vind_response
 
     def TDA(self):
         from socutils.tdscf import gks
