@@ -580,6 +580,12 @@ def grad_elec(td_grad, z, atmlst=None, verbose=logger.INFO):
     c0 = jk_coef(mf.xc) if is_ks else 1.
     ck = jk_coef(td_grad.kernel_xc()) if is_ks else 1.
     pieces = []
+    # Re Tr[G[X] X^H] does not depend on the phase of X: rotate a Kramers-pair transition density to its
+    # time-reversal even phase (X_bb = X_aa^*), so that Herm(X) is TR even and the other part TR odd, each with
+    # half the distinct pieces (the eigenvector's phase is arbitrary)
+    c = numpy.vdot(X_g[nao:, nao:], X_g[:nao, :nao].conj())
+    if abs(c) > 0:
+        X_g = X_g * numpy.sqrt(c / abs(c))
     _quad_pieces(pieces, (D0_g + Wh_g) * .5, nao, 1., c0, 1.)
     _quad_pieces(pieces, (D0_g - Wh_g) * .5, nao, 1., c0, -1.)
     _quad_pieces(pieces, _herm(X_g), nao, 1., ck)
