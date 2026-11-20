@@ -44,9 +44,14 @@ PIECE_TOL = 1e-14       # relative size below which a scalar piece of Q[H] is dr
 
 
 # ---------------------------------------------------------------- quadratic forms
+MERGE_TOL = 1e-4        # relative difference below which two equally weighted pieces are merged
+
+
 def _add_piece(pieces, M, jw, kw, tol):
-    '''add jw E_J[M] + kw E_K[M]; a matrix proportional to one already listed (M = l M') merges (E[l M'] =
-    l^2 E[M'])'''
+    '''add jw E_J[M] + kw E_K[M].  A matrix proportional to one already listed (M = l M') merges exactly
+    (E[l M'] = l^2 E[M']); one equal to +-M' within MERGE_TOL with the same weights (the alpha and beta blocks of a
+    Kramers pair, equal up to the numerical pairing, ~1e-7) merges by w (E[a] + E[b]) = 2 w E[(a + b) / 2] +
+    2 w E[(a - b) / 2], the last term (second order in a - b) dropped'''
     amax = abs(M).max()
     if amax <= tol:
         return
@@ -54,9 +59,17 @@ def _add_piece(pieces, M, jw, kw, tol):
         Mp = p[0]
         i = numpy.unravel_index(numpy.argmax(abs(Mp)), Mp.shape)
         lam = M[i] / Mp[i]
-        if abs(M - lam * Mp).max() <= 1e-12 * amax:
+        d = abs(M - lam * Mp).max()
+        if d <= 1e-12 * amax:
             p[1] += jw * lam * lam
             p[2] += kw * lam * lam
+            return
+        s = numpy.sign(lam)
+        if (abs(M - s * Mp).max() <= MERGE_TOL * amax and abs(p[1] - jw) <= 1e-12 * max(abs(jw), 1)
+                and abs(p[2] - kw) <= 1e-12 * max(abs(kw), 1)):
+            p[0] = numpy.ascontiguousarray((Mp + s * M) * .5)
+            p[1] *= 2
+            p[2] *= 2
             return
     pieces.append([numpy.ascontiguousarray(M), jw, kw])
 
