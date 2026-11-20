@@ -28,6 +28,10 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
     nocc = ncore + ncas
     s1e = mc._scf.get_ovlp()
     mc.mo_coeff = mo_coeff
+    # double-group irreps (mc.orbsym) mask the gradient; the orbitals stay
+    # symmetry adapted because mc._scf.eig diagonalizes the Fock matrix by irrep
+    mc._setup_orbsym(mo_coeff, strict=True)
+    dg_symm = mc.orbsym is not None and mc._dg_symm_orb(mo_coeff) is not None
 
     mc_diis = scf.diis.CDIIS()
     h1e = mc._scf.get_hcore()
@@ -54,8 +58,17 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         t3m = log.timer('Integral transformation', *t3m)
 
         mci = zmcscf._fake_h_for_fast_casci(mc, mo, eris)
-        # if cached vj_c, vk_c available, precompute h1eff and energy_core
-        # to avoid redundant get_jk call inside CASCI kernel
+        # core J/K of the *current* orbitals: _CDERIS built them in its pass
+        # (eris.vj_core/vk_core), so no extra get_jk.  (The J/K kept from the
+        # previous iteration belong to the previous core density; combined
+        # with the new one they give a non-variational energy that drove large
+        # orbital steps away -- periodic Eu:Y2O3 went below the CASCI ground
+        # state and diverged.)
+        if ncore > 0:
+            core_occ0 = np.zeros(nmo)
+            core_occ0[:ncore] = 1
+            vj_c, vk_c = eris.get_jk(np.dot(mo[:, :ncore], mo[:, :ncore].T.conj()),
+                                     mo_coeff=mo, mo_occ=core_occ0)
         if vj_c is not None:
             mo_core = mo[:, :ncore]
             mo_cas = mo[:, ncore:nocc]
@@ -91,6 +104,16 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         print('active fock')
         vj_a_mo, vk_a_mo = eris.get_jk_active_mo(casdm1)
         vhf_a = vj_a_mo - vk_a_mo
+        # periodic (spinor_scf): the exchange G = 0 term nu_M S D S, which is
+        # -nu_M D in the MO basis.  It is a constant in the energy of the
+        # ensemble (energy_nuc) and only shifts the diagonal shell blocks of the
+        # Fock matrices (no gradient), but without it the core/active level
+        # positions of the step are off by nu_M and the iterations go uphill.
+        k_shift = getattr(mc._scf, 'k_shift', None)
+        if callable(k_shift) and k_shift():
+            nu = k_shift()
+            vhf_c = vhf_c - nu * dm_core
+            vhf_a = vhf_a - nu * dm_active
         vhf_ca = vhf_c + vhf_a
 
         g = np.zeros((nmo, nmo), dtype=complex)
@@ -208,6 +231,12 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
         e_last = e_tot
         mo_old = mo
         mo_energy, mo = mc._scf.eig(fock, s1e)
+        if dg_symm:
+            # the double-group eig groups the orbitals by irrep: back to the
+            # energy order (stable, so the Kramers pairs stay interleaved)
+            order = np.argsort(mo_energy.round(9), kind='stable')
+            mo_energy = mo_energy[order]
+            mo = lib.tag_array(np.asarray(mo)[:, order], orbsym=np.asarray(mo.orbsym)[order])
         print(mo_energy)
         mo_unsrt = mo.copy()
         if hasattr(mc._scf, "irrep_mo") and mc._scf.irrep_mo is not None:
@@ -257,7 +286,9 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
                 energy_list = np.array(energy_list)
                 ovlp_list = np.array(ovlp_list)
                 #picked_index[start:end] = idx_list[np.argsort(energy_list)[:space]]
-                picked_index[start:end] = idx_list[np.argsort(ovlp_list)[-space:]]
+                # index order: Kramers partners have equal overlaps, and argsort
+                # would order them by roundoff, swapping u and Tu at random
+                picked_index[start:end] = np.sort(idx_list[np.argsort(ovlp_list)[-space:]])
                 print(np.argsort(np.abs(ovlp_list))[-space-4:])
                 print(np.sort(np.abs(ovlp))[-space-4:])
                 print(picked_index)
@@ -273,6 +304,12 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
             analyze.analyze(mol, mo[:,ncore:nocc], mo_energy[ncore:nocc])
         imacro += 1
         mc.mo_coeff = mo.copy()
+        if mc.orbsym is not None:
+            # sort_mo reordered the orbitals
+            mc._setup_orbsym(mc.mo_coeff, strict=True)
         #mc.irrep = mo.orbsym
+    if mc.orbsym is not None:
+        mc.check_orbsym(mc.mo_coeff)
+        mc.mo_coeff = lib.tag_array(mc.realify_mo(mc.mo_coeff), orbsym=mc.orbsym)
     return mc, mo_unsrt, mo_energy
  

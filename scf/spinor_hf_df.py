@@ -21,7 +21,6 @@ from socutils.scf.spinor_hf import (  # noqa: F401  (also expose non-public name
     sph2spinor,
     get_hcore,
     SpinorSCF,
-    SymmSpinorSCF,
     KRHF,
     SCF,
 )

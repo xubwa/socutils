@@ -90,6 +90,28 @@ def to_2c(x, r, h4c):
     h2c = reduce(np.dot, (r.T.conj(), l, r))
     return h2c
 
+def to_2c_adjoint(x, r, dm2c):
+    '''Adjoint of to_2c: the 4c matrix G with tr(dm2c to_2c(x, r, h4c)) =
+    tr(G h4c) for every h4c.'''
+    n2c = x.shape[0]
+    dl = reduce(np.dot, (r, dm2c, r.T.conj()))
+    g = np.empty((2 * n2c, 2 * n2c), dtype=np.result_type(dl, x))
+    g[:n2c, :n2c] = dl
+    g[:n2c, n2c:] = np.dot(dl, x.T.conj())
+    g[n2c:, :n2c] = np.dot(x, dl)
+    g[n2c:, n2c:] = reduce(np.dot, (x, dl, x.T.conj()))
+    return g
+
+
+def _hfw1_adjoint(helper, blocks, dm2c, x_response):
+    '''Effective 4c densities of the helper's X2C Hamiltonian, see
+    get_hfw1_adjoint.'''
+    a, e, x, st, r, l, h4c, m4c = blocks
+    if x_response:
+        return x2c_grad.hfw1_adjoint(a, x, st, m4c, h4c, e, r, l, dm2c)
+    return to_2c_adjoint(x, r, dm2c), None
+
+
 def extract_ith_integral(atm_integrals, idx):
     out = {}
     for key, value in atm_integrals.items():
@@ -473,6 +495,107 @@ def x2cmp_screen(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=F
         h_x2c = to_2c(x, r, h1e_4c)
     return h_x2c
 
+_MC_PRESCREEN = {'llll': 'SOCrkbllll_mc_prescreen',
+                 'ssll': 'SOCrkbssll_mc_prescreen',
+                 'ssss': 'SOCrkbllll_mc_prescreen',
+                 'gaunt_lsls': 'SOCrkb_gaunt_lsls_mck_prescreen',
+                 'gaunt_lssl': 'SOCrkb_gaunt_lssl_mck_prescreen'}
+
+def _mc_prescreen_pointers():
+    '''Addresses of the prescreen functions in lib/libsocvhf.so that skip the
+    one-centre shell quartets, or None if the library has not been built.'''
+    import ctypes, _ctypes
+    from socutils.lib import load_library
+    try:
+        libsocvhf = load_library('libsocvhf', 'SOCUTILS_SOCVHF_LIBRARY')
+    except OSError:
+        return None
+    return {key: ctypes.c_void_p(_ctypes.dlsym(libsocvhf._handle, name))
+            for key, name in _MC_PRESCREEN.items()}
+
+def get_veff_mc(mf_4c, xmol, density_4c, density_2c):
+    '''Multi-centre part of J-K for a superposition of atomic densities.
+
+    The quartets with four shells on the same atom are skipped; their
+    contribution is the two-electron Fock matrix of the atomic calculations
+    (atm_integrals index 5 for 4c, 6 for 2c) and has to be added by the caller.
+    The (LL|LL) integrals are contracted with the LL block of density_4c and
+    with density_2c in the same pass.
+    Of the Gaunt/Breit integrals only the exchange part is integrated; the
+    direct part is zero for these densities (see _get_k_gaunt_breit).
+
+    Returns:
+        (veff_4c, veff_2c), or None if lib/libsocvhf.so is not available or
+        mf_4c is not a plain direct-SCF DHF with the (SS|SS) integrals.
+    '''
+    from pyscf.scf import dhf
+    fscreen = _mc_prescreen_pointers()
+    if (fscreen is None or not mf_4c.direct_scf or mf_4c.screening is False
+            or mf_4c._coulomb_level.upper() != 'SSSS'):
+        return None
+    # dropping the direct Gaunt/Breit term needs a Kramers-symmetric density
+    if abs(density_4c - dhf.time_reversal_matrix(xmol, density_4c)).max() > 1e-10:
+        return None
+    opts = dict(zip(('llll', 'ssll', 'ssss', 'gaunt_lsls', 'gaunt_lssl'),
+                    mf_4c.init_direct_scf(xmol)))
+    for key, opt in opts.items():
+        if opt is not None:
+            opt.prescreen = fscreen[key]
+
+    n2c = density_2c.shape[0]
+    vj, vk = dhf._call_veff_ssll(xmol, density_4c, 1, opts['ssll'])
+    veff_4c = vj - vk
+    dm_ll = np.zeros((2,) + density_4c.shape, dtype=density_4c.dtype)
+    dm_ll[0] = density_4c
+    dm_ll[1,:n2c,:n2c] = density_2c
+    vj, vk = dhf._call_veff_llll(xmol, dm_ll, 1, opts['llll'])
+    veff_4c[:n2c,:n2c] += vj[0] - vk[0]
+    veff_2c = vj[1] - vk[1]
+    vj, vk = dhf._call_veff_ssss(xmol, density_4c, 1, opts['ssss'])
+    veff_4c[n2c:,n2c:] += vj - vk
+    if mf_4c.with_breit or mf_4c.with_gaunt:
+        veff_4c -= _get_k_gaunt_breit(xmol, density_4c, opts['gaunt_lsls'],
+                                      opts['gaunt_lssl'], mf_4c.with_breit, lssl_tril=True)
+    return veff_4c, veff_2c
+
+def _get_k_gaunt_breit(xmol, dm, opt_lsls, opt_lssl, with_breit, lssl_tril=False):
+    '''Exchange matrix of the Gaunt (or Gaunt + gauge) interaction for a
+    Hermitian 4c density matrix: dhf._call_veff_gaunt_breit without the
+    contractions for J.
+
+    The direct term is the interaction with the current density.  It is zero
+    for a superposition of spherically averaged, Kramers-symmetric atomic
+    densities, and the quartets that enter J only are not integrated here
+    (the prescreen functions of the two optimizers keep the K quartets).
+
+    lssl_tril: the prescreen function of opt_lssl keeps only the quartets for
+    the lower triangles of the Hermitian LL and SS blocks.
+    '''
+    from pyscf.scf import _vhf
+    intor_prefix = 'int2e_breit_' if with_breit else 'int2e_'
+    n2c = dm.shape[0] // 2
+    dmll = dm[:n2c,:n2c].copy()
+    dmsl = dm[n2c:,:n2c].copy()
+    dmss = dm[n2c:,n2c:].copy()
+    vk = np.zeros(dm.shape, dtype=np.complex128)
+    vk[:n2c,n2c:] = _vhf.rdirect_mapdm(
+        intor_prefix+'ssp1ssp2_spinor', 's1', 'jk->s1il', dmsl, 1,
+        xmol._atm, xmol._bas, xmol._env, opt_lsls)
+    vx = _vhf.rdirect_bindm(
+        intor_prefix+'ssp1sps2_spinor', 's1', ('li->s1kj', 'jk->s1il'), [dmll, dmss], 1,
+        xmol._atm, xmol._bas, xmol._env, opt_lssl)
+    if lssl_tril:
+        vx = [np.tril(x) + np.tril(x, -1).conj().T for x in vx]
+    vk[n2c:,n2c:] = vx[0]
+    vk[:n2c,:n2c] = vx[1]
+    vk[n2c:,:n2c] = vk[:n2c,n2c:].T.conj()
+    c1 = .5 / param.LIGHT_SPEED
+    if with_breit:
+        vk *= c1**2
+    else:
+        vk *= -c1**2
+    return vk
+
 def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, nucmod=None):
     mol = x2cobj.mol
     if nucmod is None:
@@ -550,6 +673,7 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         #         6 fock_2c_2e, 7 fock_4c_K, 8 fock_2c_K, 9 so_4c, 10 so_2c, 11 den_4c, 12 den_2c};
         density_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 11), atom_slices, xmol, n2c, True)
         density_2c = construct_molecular_matrix(extract_ith_integral(atm_ints, 12), atom_slices, xmol, n2c, False)
+        x2cobj.density_4c = density_4c      # the nuclear gradient (x2c_grad.nuc_grad_hcore)
         atomic_h1e_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 2), atom_slices, xmol, n2c, True)
         atomic_fock_4c = construct_molecular_matrix(extract_ith_integral(atm_ints, 3), atom_slices, xmol, n2c, True)
         atomic_fock_4c_2e = construct_molecular_matrix(extract_ith_integral(atm_ints, 5), atom_slices, xmol, n2c, True)
@@ -561,12 +685,23 @@ def x2cmp(x2cobj, verbose=None, gaunt=False, breit=False, pcc=True, aoc=False, n
         ene_corr = np.einsum('ij,ji->', atomic_fock_4c_2e, density_4c).real-np.einsum('ij,ji->',atomic_fock_2c_2e, density_2c).real
         ene_corr2 = np.einsum('ij,ji->',atomic_fock_2c2e_fw - atomic_fock_2c_2e, density_2c).real
         print(ene_corr*0.5, ene_corr2*0.5)
-        vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
-        veff_4c = vj_4c - vk_4c
+        # The one-centre part of J-K is the atomic two-electron Fock matrix;
+        # only the multi-centre part needs the molecular integrals.  The
+        # atomic Fock matrix of an average-of-configuration calculation is
+        # not J-K of the atomic density, so that case takes the full build.
+        veff_mc = None
+        if getattr(x2cobj, 'atomic_1c', True) and not aoc:
+            veff_mc = get_veff_mc(mf_4c, xmol, density_4c, density_2c)
+        if veff_mc is None:
+            vj_4c, vk_4c= mf_4c.get_jk(dm=density_4c)
+            veff_4c = vj_4c - vk_4c
+            mf_2c = spinor_hf.SCF(xmol)
+            veff_2c = mf_2c.get_veff(dm=density_2c)
+        else:
+            veff_4c = veff_mc[0] + atomic_fock_4c_2e
+            veff_2c = veff_mc[1] + atomic_fock_2c_2e
         fock_4c = x2cobj.h4c + veff_4c
         x, st, r, h2c = x2c1e_hfw0_4cmat(fock_4c, s4c, xmol)
-        mf_2c = spinor_hf.SCF(xmol)
-        veff_2c = mf_2c.get_veff(dm=density_2c)
         x2cobj.veff_2c=veff_2c
         h_x2c = to_2c(x, r, fock_4c) - veff_2c
         x2cobj.h4c = h1e_4c + veff_4c
@@ -848,6 +983,8 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = x2cmp # use this class to implement various flavors of approximations.
+        # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
+        self.atomic_1c = True
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
@@ -957,7 +1094,32 @@ class SpinorX2CMPHelper(x2c.x2c.SpinorX2CHelper):
         else:
             hfw1 = to_2c(x, r, h4c1)
         return hfw1
-    
+
+    def _x2c_blocks(self):
+        '''(a, e, x, st, r, l, h4c, m4c) of the decoupling, cached.'''
+        if self.h4c is None:
+            self.get_hcore(self.mol)
+        if self.x2c_intermediate is None:
+            n2c = self.h4c.shape[0] // 2
+            h, m = self.h4c, self.m4c
+            a, e, x, st, r, l, h4c, m4c = x2c_grad.x2c1e_hfw0_block(
+                h[:n2c, :n2c], h[n2c:, :n2c], h[:n2c, n2c:], h[n2c:, n2c:],
+                m[:n2c, :n2c], m[n2c:, n2c:])
+            self.x2c_intermediate = {'a': a, 'e': e, 'x': x, 'st': st, 'r': r, 'l': l}
+        d = self.x2c_intermediate
+        return d['a'], d['e'], d['x'], d['st'], d['r'], d['l'], self.h4c, self.m4c
+
+    def get_hfw1_adjoint(self, dm2c, x_response=True):
+        '''Effective 4c densities (Gh, GS) of the 2c density dm2c (Hermitian, in
+        the decontracted spinor basis of h4c):
+
+            tr(dm2c get_hfw1(h4c1, s4c1, x_response)) = tr(Gh h4c1) + tr(GS s4c1)
+
+        for every Hermitian h4c1, s4c1.  One evaluation per density, then each
+        one-electron perturbation is a contraction.  GS is None for
+        x_response=False (the plain picture change has no metric term).'''
+        return _hfw1_adjoint(self, self._x2c_blocks(), dm2c, x_response)
+
     def get_xr(self):
         if self.h4c is None:
             self.get_hcore(self.mol)
@@ -991,6 +1153,8 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         self.pcc = with_pcc
         self.aoc = with_aoc
         self.amf_type = x2cmp # use this class to implement various flavors of approximations.
+        # take the one-centre part of J-K from the atomic calculations ('x2cmp' flavor)
+        self.atomic_1c = True
         self.nucmod = mol.nucmod
         self.h4c = None
         self.m4c = None
@@ -1045,6 +1209,30 @@ class SpinOrbitalX2CMPHelper(x2c.x2c.SpinOrbitalX2CHelper):
         else:
             hfw1 = to_2c(x, r, h4c1)
         return hfw1
+
+    def _x2c_blocks(self):
+        '''(a, e, x, st, r, l, h4c, m4c) of the decoupling (in the spinor
+        basis, as get_hfw1), cached.'''
+        if self.h4c is None:
+            self.get_hcore(self.mol)
+        if self.x2c_intermediate is None:
+            n2c = self.h4c.shape[0] // 2
+            h, m = self.h4c, self.m4c
+            self.x2c_intermediate = x2c_grad.x2c1e_hfw0_block(
+                h[:n2c, :n2c], h[n2c:, :n2c], h[:n2c, n2c:], h[n2c:, n2c:],
+                m[:n2c, :n2c], m[n2c:, n2c:])
+        return self.x2c_intermediate
+
+    def get_hfw1_adjoint(self, dm2c, x_response=True):
+        '''Effective 4c densities (Gh, GS) of the 2c density dm2c (Hermitian, in
+        the decontracted spinor basis of h4c):
+
+            tr(dm2c get_hfw1(h4c1, s4c1, x_response)) = tr(Gh h4c1) + tr(GS s4c1)
+
+        for every Hermitian h4c1, s4c1.  One evaluation per density, then each
+        one-electron perturbation is a contraction.  GS is None for
+        x_response=False (the plain picture change has no metric term).'''
+        return _hfw1_adjoint(self, self._x2c_blocks(), dm2c, x_response)
 
 X2CMP = SpinorX2CMPHelper
 

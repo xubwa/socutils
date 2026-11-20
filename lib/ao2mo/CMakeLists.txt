@@ -53,3 +53,14 @@ target_link_libraries(nrr_opt PRIVATE
 set_target_properties(nrr_opt PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
   INSTALL_RPATH "$ORIGIN:${PYSCF_LIB_DIR}:${PYSCF_DEPS_LIB_DIR}")
+
+# The spinor AO->MO kernels as rewritten in zccsdt (used by cc/fast/nrr_fast.py)
+add_library(zc_nrr_opt SHARED zc_nrr_ao2mo_opt.c)
+target_include_directories(zc_nrr_opt PRIVATE
+  ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
+target_link_libraries(zc_nrr_opt PRIVATE
+  ${PYSCF_AO2MO_LIB} ${PYSCF_NP_HELPER_LIB} ${PYSCF_CVHF_LIB} ${PYSCF_CINT_LIB}
+  ${PYSCF_OPENBLAS_LIB} ${OPENMP_C_PROPERTIES})
+set_target_properties(zc_nrr_opt PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
+  INSTALL_RPATH "$ORIGIN:${PYSCF_LIB_DIR}:${PYSCF_DEPS_LIB_DIR}")

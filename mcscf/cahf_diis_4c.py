@@ -176,7 +176,9 @@ def mc_diis(mc, mo_coeff, target_orbital=None, mo_cap=None, conv_tol=None,
                 energy_list = np.array(energy_list)
                 ovlp_list = np.array(ovlp_list)
                 #picked_index[start:end] = idx_list[np.argsort(energy_list)[:space]]
-                picked_index[start:end] = idx_list[np.argsort(ovlp_list)[-space:]]
+                # index order: Kramers partners have equal overlaps, and argsort
+                # would order them by roundoff, swapping u and Tu at random
+                picked_index[start:end] = np.sort(idx_list[np.argsort(ovlp_list)[-space:]])
                 print(np.argsort(np.abs(ovlp_list))[-space-4:])
                 print(np.sort(np.abs(ovlp))[-space-4:])
                 print(picked_index)

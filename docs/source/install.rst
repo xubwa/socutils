@@ -79,10 +79,12 @@ only useful for A/B comparison:
 Backend and dispatcher selection is controlled by environment variables:
 
 * ``X2CAMF_BACKEND=c`` (default if built) ``| cpp`` -- which backend runs.
-* ``SOCUTILS_X2CAMF=auto`` (default) ``| bundled | external`` -- whether the
+* ``SOCUTILS_X2CAMF=bundled`` (default) ``| auto | external`` -- whether the
   bundled dispatcher is used, or an externally installed ``x2camf`` is left in
-  charge.  ``auto`` defers to an external ``x2camf`` if one is importable;
-  ``bundled`` forces the in-tree one.
+  charge.  ``bundled`` uses the in-tree one even if an external ``x2camf`` is
+  installed (the external Python layer misplaces the atomic matrices for
+  segmented or unsorted basis sets); ``auto`` defers to an external ``x2camf``
+  if one is importable.
 
 Getting socutils
 ----------------

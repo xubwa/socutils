@@ -1,18 +1,16 @@
 '''
 ctypes binding to libzquatev -- Toru Shiozaki's quaternionic eigensolver,
-bundled into socutils.
+built from its own repository into socutils/lib/deps/lib by lib/CMakeLists.txt.
 
-This is a drop-in replacement for the external ``zquatev`` Python package
-(github.com/xubwa/zquatev, a pybind11 wrapper): it exposes ``eigh``,
-``geigh``, ``check_kramers_structure`` and ``solve_KR_FCSCE`` with the same
-signatures, so downstream code works unchanged.  The numerical solver
-(``csrc/``) is unmodified BSD-2-Clause zquatev; only the C ABI shim
-(``capi/zquatev_capi.cc``) and this loader are new.
+Same functions as the Python package of sunqm/zquatev (``eigh``, ``geigh``,
+``check_kramers_structure``, ``solve_KR_FCSCE``), on its C entry point
+``eigh``.  The solver is zquatev (BSD-2-Clause, sunqm/zquatev); this loader
+is socutils code (Apache-2.0).
 
 The shared library is located in the following order:
   1. the path in the environment variable SOCUTILS_ZQUATEV_LIBRARY
-  2. libzquatev.so / .dylib / .dll in the socutils/lib directory (one level up:
-     all bundled libraries are built flat into lib/, pyscf-style)
+  2. libzquatev.so / .dylib / .dll in socutils/lib/deps/lib (ExternalProject),
+     then in socutils/lib (old in-tree build)
   3. the system library search path (ctypes.util.find_library)
 '''
 
@@ -37,8 +35,8 @@ def _candidate_paths():
     else:
         names = ["libzquatev.so"]
     for name in names:
-        yield os.path.join(libdir, name)
-        yield os.path.join(here, name)   # legacy in-place location
+        yield os.path.join(libdir, 'deps', 'lib', name)   # ExternalProject build
+        yield os.path.join(libdir, name)   # old in-tree build
     found = ctypes.util.find_library("zquatev")
     if found:
         yield found
@@ -63,11 +61,14 @@ def _load_library():
 
 _lib = _load_library()
 
-_lib.zquatev_eigh.restype = ctypes.c_int
-_lib.zquatev_eigh.argtypes = [
+# int eigh(complex<double>* D, double* eig, int n2, int ld2) of
+# sunqm/zquatev src/wrapper.cc; eig gets the n2/2 distinct eigenvalues
+_lib.eigh.restype = ctypes.c_int
+_lib.eigh.argtypes = [
+    ctypes.c_void_p,  # complex128 buffer (column major), in/out
+    ctypes.c_void_p,  # eigenvalues, out
     ctypes.c_int,
-    ctypes.POINTER(ctypes.c_double),  # complex128 buffer, in/out
-    ctypes.POINTER(ctypes.c_double),  # eigenvalues, out
+    ctypes.c_int,
 ]
 
 
@@ -77,10 +78,8 @@ def eigh(mat, iop=0):
     fmat = numpy.asarray(mat).T.copy()          # column-major layout of mat
     fmat = numpy.ascontiguousarray(fmat, dtype=numpy.complex128)
     eigs = numpy.zeros(2 * n, dtype=numpy.float64)
-    info = _lib.zquatev_eigh(
-        ctypes.c_int(2 * n),
-        fmat.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-        eigs.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+    info = _lib.eigh(fmat.ctypes.data, eigs.ctypes.data, 2 * n, 2 * n)
+    eigs[n:] = eigs[:n]
     if info:
         raise RuntimeError('zquatev failed (info=%d)' % info)
     fmat = fmat.T.copy()                         # back to C order

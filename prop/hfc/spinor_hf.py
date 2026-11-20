@@ -95,8 +95,10 @@ if __name__ == '__main__':
 O        -0.00000000     0.00000000     0.68645937
 H         0.00000000     0.00000000    -1.20326715
 """,
-        basis = 'ccpvdz', spin=1, unit="bohr", verbose = 4)
-    mf = spinor_hf.SymmJHF(mol, symmetry="linear", occup={"-1/2":[4], "1/2":[4], "3/2":[0], "-3/2":[1]})
+        basis = 'ccpvdz', spin=1, unit="bohr", symmetry=True, verbose = 4)
+    from socutils.scf import double_group_symm
+    mf = double_group_symm.SymAdaptedUHF(mol)
+    mf.irrep_nelec = {"-1/2": 4, "1/2": 4, "3/2": 0, "-3/2": 1}
     mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, with_gaunt=False, with_breit=False, eamf="x2camf")
     mf.kernel()
     mf.HFC()

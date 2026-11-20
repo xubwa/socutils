@@ -9,6 +9,7 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf
+from socutils.prop.mixin import FourComponentPropertyMixin
 
 zquatev = None
 try:
@@ -16,7 +17,7 @@ try:
 except ImportError:
     pass
 
-class FRAC_RDHF(dhf.RDHF):
+class FRAC_RDHF(FourComponentPropertyMixin, dhf.RDHF):
     nopen = None
     nact = None
     def __init__(self, mol, nopen=0, nact=0):

@@ -8,7 +8,10 @@ def mmf4c(dhf, contr_coeff = None):
     assert(isinstance(dhf, scf.dhf.DHF))
     if contr_coeff is not None:
         raise NotImplementedError("contraction projection is not implemented yet.")
-    return mmf4c_fock(dhf.mol, dhf.mo_coeff, dhf.get_fock(), dhf.get_ovlp())
+    # superseded by socutils.somf.x2cmmf.x2cmmf, which also carries the DHF
+    # energy, Kramers restriction and double-group symmetry
+    from socutils.somf.x2cmmf import x2cmmf
+    return x2cmmf(dhf)
 
 def mmf4c_fock(mol, coeff4c, fockao_4c, ovlp_4c = None):
     assert(coeff4c.shape == fockao_4c.shape)

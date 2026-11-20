@@ -12,22 +12,110 @@
 # 2-component SpinorNumInt2C (which also makes the collinear f_xc work with
 # complex transition densities).
 #
-# Only TDA is exposed here.  TDA sets B=0, so its response matrix A is genuinely
-# Hermitian and the Davidson solve (lr_eig.eigh) is robust.  The full RPA/TDDFT
-# (Casida) problem is k-Hermitian (non-Hermitian) on a Krein space with an
-# indefinite metric [Furche & Chen, J. Chem. Phys. 163, 174104 (2025)]; its
-# iterative solution is delicate near eta-neutral roots and is left aside for
-# now.
+# TDA sets B=0, so its response matrix A is genuinely Hermitian and the Davidson
+# solve is robust.  The full RPA/TDDFT (Casida) problem is k-Hermitian
+# (non-Hermitian) on a Krein space with an indefinite metric [Furche & Chen,
+# J. Chem. Phys. 163, 174104 (2025)]; on a general complex reference TDRPA uses
+# the paired Davidson (lr_davidson).  On a Kramers-restricted closed shell the
+# time-reversal adaptation makes A +- B real symmetric and TDRPA solves
+# (A+B)P = wQ, (A-B)Q = wP in real arithmetic (lr_locked.rpa_eig; see TDRPA).
 #
 # Validated vs pyscf's 2-component GKS-TDA (non-relativistic integrals, no SOC)
-# to machine precision (LDA / GGA / hybrid).  With SOC integrals the orbitals
-# are genuinely complex; set mf._numint.collinear='mcol' for the spin-flip
-# (non-collinear) response.
+# to machine precision (LDA / GGA / hybrid), and vs ReSpect (1e-X2C PBE TDA of
+# Zn: 3P0,1,2 and 1P1 within 3e-8 a.u.).  The response kernel defaults to the
+# non-collinear one (td.collinear = 'auto': 'ncol' for closed shells, 'mcol'
+# for open shells) even on a collinear ground state: the collinear kernel has
+# no spin-flip channel and scrambles spin-orbit fine structure.
 #
 
+import contextlib
 import numpy
 from pyscf import lib
 from pyscf.tdscf import ghf as _ghf
+
+
+MAX_SPACE_PER_ROOT = 20     # the default subspace bound of the locked solves, per root (memory permitting)
+MAX_SPACE_MEM_FRAC = .3     # of the free max_memory for the subspace
+
+
+def _max_space(td, nroots, n, narr):
+    '''td.max_space, or the default bound of the subspace: MAX_SPACE_PER_ROOT x nroots within MAX_SPACE_MEM_FRAC of
+    the free memory (narr complex arrays of n per subspace vector: the vectors and their products), at least
+    max(8 nroots, 40).  A collapse to 2 nroots Ritz vectors costs iterations (BiPh3 TDA, 15 roots: 21 calls with
+    the bound 120, 16 with 300).'''
+    if td.max_space is not None:
+        return td.max_space
+    free = max(0., td.max_memory - lib.current_memory()[0])
+    cap = int(MAX_SPACE_MEM_FRAC * free / (narr * n * 16e-6))
+    return max(8 * nroots, 40, min(MAX_SPACE_PER_ROOT * nroots, cap))
+
+
+def _root_tol(td, nstates, nbuf):
+    '''the residual tolerance per root of the locked solves: conv_tol, buffer_tol for the nbuf buffer roots'''
+    bt = getattr(td, 'buffer_tol', None)
+    if bt is None or nbuf <= 0:
+        return td.conv_tol
+    return numpy.array([td.conv_tol] * nstates + [max(bt, td.conv_tol)] * nbuf)
+
+
+@contextlib.contextmanager
+def _coarse_response(td, log):
+    '''the coarse first phase of the locked solves: yields setup(aop, gen) -> (aop0, refine) for lr_locked
+    (refine None: no coarse phase).  td.coarse_grid: the COSX response K on that grid level
+    (spinor_jk.RESPONSE_GRID; RIJ / COSX references); td.coarse_fxc_grids: f_xc on that grid ('cpscf' or a
+    Grids; the operator of gen(mf) built and applied with mf.grids set to it).  The phase ends when every
+    residual is below td.coarse_tol x conv_tol (lr_locked refine), the solve then converges on aop, the final
+    operator; spinor_jk.RESPONSE_GRID restored on exit'''
+    from socutils.scf import spinor_jk
+    mf = td._scf
+    lvl = getattr(td, 'coarse_grid', None)
+    fine = spinor_jk.RESPONSE_GRID
+    if lvl == fine or spinor_jk.mode(mf) not in ('cosx', 'rijcosx'):
+        lvl = None
+    gc = getattr(td, 'coarse_fxc_grids', None)
+    if isinstance(gc, str) and gc == 'auto':
+        gc = 'cpscf' if lvl is not None else None
+    if gc is not None and hasattr(mf, 'grids') and getattr(mf, '_numint', None) is not None:
+        gc = td._fxc_grids(gc)
+        if gc is td._fxc_grids():
+            gc = None           # the solve is on that grid already
+    else:
+        gc = None
+    if lvl is None and gc is None:
+        yield lambda aop, gen, nstates, nbuf: (aop, None)
+        return
+    rtol = td.coarse_tol * td.conv_tol
+
+    def setup(aop, gen, nstates, nbuf):
+        aop0 = aop
+        if gc is not None:
+            with lib.temporary_env(mf, grids=gc):
+                vc = gen(mf)[0]
+
+            def coarse(*z):
+                with lib.temporary_env(mf, grids=gc):
+                    return vc(*z)
+            aop0 = coarse
+
+        def switch():
+            spinor_jk.RESPONSE_GRID = fine
+            log.info('response: coarse phase done (all residuals below %.1e or stalled), final operator', rtol)
+            return aop
+        if getattr(td, 'coarse_relax_buffer', False) and nbuf > 0:
+            # the roots were found in the coarse phase: the buffer roots only to rtol in the final one
+            tol0 = _root_tol(td, nstates, nbuf)
+            tol0 = numpy.broadcast_to(tol0, (nstates + nbuf,)).copy()
+            tol0[nstates:] = numpy.maximum(tol0[nstates:], rtol)
+            return aop0, (rtol, switch, tol0)
+        return aop0, (rtol, switch)
+    if lvl is not None:
+        spinor_jk.RESPONSE_GRID = lvl
+    log.info('response: coarse phase (COSX K on GRIDX%s, f_xc on %s) until the residuals are below %.1e',
+             lvl if lvl is not None else fine, '%d points' % gc.weights.size if gc is not None else 'its grid', rtol)
+    try:
+        yield setup
+    finally:
+        spinor_jk.RESPONSE_GRID = fine
 
 
 def _build_ab_jk_cderi(td, blksize=None):
@@ -61,7 +149,6 @@ def _build_ab_jk_cderi(td, blksize=None):
     mol = mf.mol
     mask = td.get_frozen_mask()
     mo = mf.mo_coeff[:, mask]
-    moe = mf.mo_energy[mask]
     occ = mf.mo_occ[mask]
     occidx = numpy.where(occ == 1)[0]
     viridx = numpy.where(occ == 0)[0]
@@ -124,6 +211,22 @@ def _build_ab_jk_cderi(td, blksize=None):
     return A_JK, foo, fvv, orbo, orbv, hyb
 
 
+def picture_change_dipole(mf, origin=(0., 0., 0.)):
+    '''Picture-change-corrected electric dipole matrices (3, n2c, n2c) in the
+    contracted spinor basis, for an X2C mean field (``mf.with_x2c``) -- a
+    thin wrapper over the central property-integral layer
+    :func:`socutils.prop.int1e.prop_int1e`.
+
+    ``x_response=False`` gives the plain picture-change operator
+    [U+ D U]_++ of the field-free decoupling.  The X-response term it drops
+    is small -- 1.8e-7 relative against 7.4e-5 for the picture change
+    itself, measured on Sm3+ -- so the choice is a detail here; what would
+    be wrong is skipping the picture change altogether.
+    '''
+    from socutils.prop.int1e import prop_int1e
+    return prop_int1e(mf, 'r', x_response=False, origin=origin)
+
+
 class _KernelXCMixin:
     '''Allow the response (A) xc kernel to differ from the ground-state xc.
 
@@ -136,13 +239,78 @@ class _KernelXCMixin:
     '''
     xc_kernel = None
 
+    # Spin treatment of the response kernel (the ground state is unchanged).
+    # 'auto': a collinear ground state gets 'ncol' for a closed shell (m = 0 by
+    # Kramers symmetry; the isotropic kernel, identical to 'mcol' there) and
+    # 'mcol' for an open shell; an 'ncol'/'mcol' ground state keeps its scheme.
+    # The collinear kernel has no spin-flip channel and breaks the fine
+    # structure of spin-orbit-coupled excitations; set 'col' only to compare.
+    collinear = 'auto'
+
+    # The grid of the response xc kernel (f_xc): None keeps the SCF grid; 'cpscf' the coarse CP-SCF grid of
+    # the analytic Hessian (socutils.hessian.rhf_fast.CPSCF_GRID_ARGS, socutils.dft.grids); or a Grids object.
+    fxc_grids = None
+
+    def _fxc_grids(self, g=None):
+        if g is None:
+            g = self.fxc_grids
+        if g is None:
+            return None
+        if isinstance(g, str):
+            if g != 'cpscf':
+                raise ValueError('fxc_grids %r' % g)
+            cache = getattr(self, '_fxc_grids_cache', None)
+            if cache is None or cache.mol is not self._scf.mol:
+                from socutils.dft.grids import hessian_grids
+                from socutils.hessian.rhf_fast import CPSCF_GRID_ARGS
+                cache = hessian_grids(self._scf.mol, **CPSCF_GRID_ARGS)
+                cache.build(with_non0tab=True)
+                lib.logger.info(self, 'response xc kernel on the CP-SCF grid: %d points (SCF grid %d)',
+                                cache.weights.size, getattr(self._scf.grids.weights, 'size', 0))
+                self._fxc_grids_cache = cache
+            return cache
+        if g.coords is None:
+            g.build(with_non0tab=True)
+        return g
+
+    def response_collinear(self):
+        ni = getattr(self._scf, '_numint', None)
+        if ni is None or not hasattr(ni, 'collinear'):
+            return None
+        if self.collinear != 'auto':
+            return self.collinear
+        if ni.collinear[0] != 'c':
+            return ni.collinear
+        mol = self._scf.mol
+        return 'ncol' if mol.spin == 0 and mol.nelectron % 2 == 0 else 'mcol'
+
+    @contextlib.contextmanager
+    def _response_env(self):
+        # _gen_ghf_response returns a vind closure that reads mf.xc and the
+        # numint's collinear scheme lazily (at Davidson time), so both must
+        # stay set for the whole solve, not just while the response is built.
+        with contextlib.ExitStack() as stack:
+            if self.xc_kernel is not None:
+                stack.enter_context(lib.temporary_env(self._scf, xc=self.xc_kernel))
+            col = self.response_collinear()
+            if col is not None:
+                lib.logger.info(self, 'response xc kernel: collinear = %s', col)
+                stack.enter_context(lib.temporary_env(self._scf._numint, collinear=col))
+            g = self._fxc_grids() if hasattr(self._scf, 'grids') else None
+            if g is not None:
+                stack.enter_context(lib.temporary_env(self._scf, grids=g))
+            yield
+    # For an X2C reference (mf.with_x2c present) compute transition dipoles
+    # with the picture-change-corrected operator (picture_change_dipole).
+    # The bare int1e_r_spinor is exact for a nonrelativistic spinor/GHF
+    # reference and is used automatically when there is no with_x2c.
+    # Measured PCE of the bare operator (HBr/cc-pVDZ, x2camf): valence f
+    # off by <~1e-3 relative, but K/L-edge (CVS) main lines off by 0.1-4%
+    # and weak SOC satellites by tens of percent.
+    picture_change = True
+
     def kernel(self, *args, **kwargs):
-        # _gen_ghf_response returns a vind closure that reads mf.xc lazily (at
-        # Davidson time), so the kernel xc must stay set for the whole solve,
-        # not just while the response is generated.
-        if self.xc_kernel is None:
-            return super().kernel(*args, **kwargs)
-        with lib.temporary_env(self._scf, xc=self.xc_kernel):
+        with self._response_env():
             return super().kernel(*args, **kwargs)
 
     def cvs(self, core):
@@ -197,27 +365,38 @@ class _KernelXCMixin:
             x0 = x0 + [numpy.asarray(g).ravel() for g in extra[len(x0):nstates]]
         return x0
 
+    def _dipole_ints(self):
+        '''Electric-dipole matrices (3, n2c, n2c) in the spinor AO basis, in
+        the picture of the reference: picture-change corrected for an X2C
+        reference (see ``picture_change_dipole`` / the ``picture_change``
+        flag), bare int1e_r_spinor otherwise (exact there).  Gauge origin
+        (0,0,0), same as pyscf's int1e_r; transition moments between
+        orthogonal states are origin independent.'''
+        mol = self._scf.mol
+        n2c = mol.nao_2c()
+        if self.picture_change and getattr(self._scf, 'with_x2c', None) is not None:
+            ints = picture_change_dipole(self._scf)
+        else:
+            ints = mol.intor('int1e_r_spinor', comp=3)
+        return ints.reshape(3, n2c, n2c)
+
     def _contract_multipole(self, ints, hermi=True, xy=None):
         '''Transition multipole (e.g. dipole) for a spinor (2-component)
         reference -- pyscf's GHF stub raises NotImplementedError.
 
         ``oscillator_strength`` calls this with the spin-free electric-dipole
         integrals built in the *spherical* AO basis; the spinor MOs live in the
-        n2c basis, so rebuild the operator there (int1e_r_spinor) and contract
-        with the X (and Y) amplitudes over the active occupied/virtual spinors.
-        No factor of two: unlike closed-shell RHF the spinor basis carries no
-        spin degeneracy to sum over.
+        n2c basis, so rebuild the operator there (``_dipole_ints``) and
+        contract with the X (and Y) amplitudes over the active occupied/
+        virtual spinors.  No factor of two: unlike closed-shell RHF the spinor
+        basis carries no spin degeneracy to sum over.
         '''
         import numpy
         if xy is None:
             xy = self.xy
         nstates = len(xy)
         pol_shape = ints.shape[:-2]          # (3,) for the dipole
-        mol = self._scf.mol
-        n2c = mol.nao_2c()
-        # spin-free electric dipole in the spinor AO basis (same (0,0,0) gauge
-        # origin as pyscf's int1e_r)
-        ints = mol.intor('int1e_r_spinor', comp=3).reshape(-1, n2c, n2c)
+        ints = self._dipole_ints()
 
         mask = self.get_frozen_mask()
         mo = self._scf.mo_coeff[:, mask]
@@ -228,9 +407,50 @@ class _KernelXCMixin:
         ints = lib.einsum('xpq,pi,qj->xij', ints, orbo.conj(), orbv)
         pol = numpy.array([numpy.einsum('xij,ij->x', ints, x) for x, y in xy])
         if isinstance(xy[0][1], numpy.ndarray):    # TDHF/RPA has de-excitations
-            ymo = numpy.array([numpy.einsum('xij,ij->x', ints, y) for x, y in xy])
+            # the Y part of the transition density is C_o Y C_v^H (pyscf's TDHF vind): <a|r|i> = <i|r|a>^*
+            ymo = numpy.array([numpy.einsum('xij,ij->x', ints.conj(), y) for x, y in xy])
             pol = pol + ymo if hermi else pol - ymo
         return pol.reshape((nstates,) + pol_shape)
+
+    def _couple_ref_transition_dipole(self):
+        '''<Psi_0|r|Psi_k> for the reference-coupled solve: full matrix
+        elements of the (picture-changed) dipole in the model space
+        span{Phi_0, Phi_i^a}, between the *relaxed ground state* (root 0) and
+        every root k.  Uses
+
+            <Phi_0 |r| Phi_jb>  = r_jb
+            <Phi_ia|r| Phi_jb>  = d_ij r_ab - d_ab r_ji + d_ij d_ab mu_ref
+
+        (mu_ref = <Phi_0|r|Phi_0>, summed over *all* occupied spinors incl.
+        frozen), plus the c0 reference-amplitude cross terms.  For a
+        stationary reference (c0_0 = 1, X_0 = 0) this reduces exactly to the
+        plain singles contraction sum_ia X^k_ia r_ia.  Requires the c0
+        amplitudes stored by ``_direct_solve`` (couple_reference=True).'''
+        import numpy
+        xy = self.xy
+        c0 = self.c0
+        D = self._dipole_ints()
+        mask = self.get_frozen_mask()
+        mo = self._scf.mo_coeff[:, mask]
+        occ = self._scf.mo_occ[mask]
+        orbo = mo[:, occ == 1]
+        orbv = mo[:, occ == 0]
+        d_ov = lib.einsum('xpq,pi,qa->xia', D, orbo.conj(), orbv)
+        d_vv = lib.einsum('xpq,pa,qb->xab', D, orbv.conj(), orbv)
+        d_oo = lib.einsum('xpq,pi,qj->xij', D, orbo.conj(), orbo)
+        occ_all = self._scf.mo_coeff[:, self._scf.mo_occ == 1]
+        mu_ref = lib.einsum('xpq,pk,qk->x', D, occ_all.conj(), occ_all)
+        X = numpy.asarray([x for x, y in xy])
+        X0, c00 = X[0], c0[0]
+        s0 = lib.einsum('xia,ia->x', d_ov, X0)      # <Phi_0|r|singles(Psi_0)>
+        mu = (numpy.multiply.outer(numpy.conj(c00) * c0, mu_ref)
+              + numpy.conj(c00) * lib.einsum('xia,kia->kx', d_ov, X)
+              + numpy.multiply.outer(c0, s0.conj())
+              + lib.einsum('ia,xab,kib->kx', X0.conj(), d_vv, X)
+              - lib.einsum('ia,xji,kja->kx', X0.conj(), d_oo, X)
+              + numpy.multiply.outer(lib.einsum('ia,kia->k', X0.conj(), X),
+                                     mu_ref))
+        return mu
 
     def oscillator_strength(self, e=None, xy=None, gauge='length', order=0,
                             e_ground=None):
@@ -238,16 +458,40 @@ class _KernelXCMixin:
         use |mu|^2 = mu . mu* -- pyscf's base routine forms mu . mu (real-dipole
         assumption), which underestimates and can even go negative here.
 
+        For a reference-coupled solve (couple_reference=True) the transition
+        moment is <Psi_0|r|Psi_k> with Psi_0 the *relaxed ground state* (root
+        0), evaluated with the full model-space matrix elements
+        (``_couple_ref_transition_dipole``), and the prefactor is the physical
+        dE = e_k - e_0.  The plain-CIS formula (bra = the reference
+        determinant, singles term only) is a first-order-in-|F_ia| error for a
+        non-stationary (CAHF / core-hole) reference -- on Ar L-edge CVS it is
+        off by factors 0.05-3.5 per line.
+
         ``e_ground``: pass a separately-converged ground-state total energy to
         use the *physical* transition energy dE = E_tot(state) - e_ground for the
         prefactor, instead of self.e (which is relative to the -- possibly
         ill-defined -- reference determinant E0).  Essential for a relaxed /
-        core-hole reference: the dipole mu = <Phi_0|r|Psi_k> is the right
-        (state-specific) transition moment, but the intensity needs the true dE.
+        core-hole reference without couple_reference: the dipole
+        mu = <Phi_0|r|Psi_k> is the right (state-specific) transition moment,
+        but the intensity needs the true dE.
         '''
         import numpy
         if e is None:
             e = self.e
+        e = numpy.asarray(e).real
+        couple = (getattr(self, 'couple_reference', False)
+                  and getattr(self, 'c0', None) is not None
+                  and (xy is None or xy is self.xy))
+        if couple:
+            de = e - e[0]
+            if e_ground is not None:
+                de = self.total_energy(e) - e_ground
+            if gauge == 'length' and order == 0:
+                mu = self._couple_ref_transition_dipole()
+                return (2. / 3. * numpy.einsum('s,sx,sx->s', de, mu,
+                                               mu.conj())).real
+            raise NotImplementedError(
+                'couple_reference oscillator strength: length gauge only')
         if e_ground is not None:
             e = self.total_energy(e) - e_ground       # physical transition energy
         if gauge == 'length' and order == 0:
@@ -417,6 +661,16 @@ class _KernelXCMixin:
 
 
 class TDA(_KernelXCMixin, _ghf.TDA):
+    def Gradients(self):
+        '''Excited-state nuclear gradient (socutils.grad.tdghf_grad); a spinor
+        reference goes through its GHF / GKS representation.'''
+        from socutils.grad import tdghf_grad
+        from socutils.scf import spinor_hf, spinor_ghf
+        if isinstance(self._scf, spinor_hf.SCF):
+            return spinor_ghf._td_gradients(self)
+        return tdghf_grad.Gradients(self)
+    nuc_grad_method = Gradients
+
     # When True, gen_vind builds the response MO-driven: the Coulomb + exact
     # exchange come from a dense, precomputed A_JK block (cderi half-transformed
     # to the active occ/vir space once), and only the local f_xc is evaluated
@@ -443,15 +697,152 @@ class TDA(_KernelXCMixin, _ghf.TDA):
     # direct diagonalization).
     couple_reference = False
     reference_weight = None        # |c0|^2 (reference character) per state
+    c0 = None                      # reference amplitude per state (complex)
+
+    # The Davidson solver: 'locked' (socutils.tdscf.lr_locked: residuals of the nroots Ritz vectors only, converged
+    # roots locked, one new vector per unconverged root, per-root preconditioning) or 'pyscf'
+    # (pyscf.tdscf._lr_eig.eigh: MAX_SPACE_INC vectors every iteration, residuals of up to max_space Ritz vectors).
+    davidson = 'locked'
+    max_space = None            # lr_locked's subspace bound (None: _max_space, 20 nroots within the memory)
+    # Time-reversal adaptation of a Kramers-restricted closed-shell reference: A commutes with the antiunitary
+    # time reversal K (K^2 = +1 on particle-hole excitations), so every root has a TR-even eigenvector z = K z and
+    # the solve runs in the real space of TR-even vectors.  Their transition densities are TR-even (D_bb = D_aa^*,
+    # D_ba = -D_ab^*: n real, m imaginary): half the f_xc channels, J densities and K pieces (socutils.dft.fxc_2c,
+    # scf.spinor_jk).  'auto': where the reference's orbitals are Kramers paired (checked); True / False force.
+    kramers = 'auto'
+    KRAMERS_TOL = 1e-6
+    nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+    buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
+    min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
+    # The coarse phase (RIJ / COSX references): the Davidson runs with the COSX response K on grid level
+    # coarse_grid and f_xc on coarse_fxc_grids ('auto': the CP-SCF grid when coarse_grid applies; 'cpscf', a
+    # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
+    # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
+    # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh; with the default max_space as well (old
+    # default against both) TDA 2350 -> 1257 s, RPA 2655 -> 1962 s.  coarse_grid = None: off.
+    coarse_grid = 0
+    coarse_tol = 100.
+    coarse_fxc_grids = 'auto'
+    coarse_relax_buffer = True
 
     def kernel(self, x0=None, nstates=None):
         if not (self.direct or self.couple_reference):
+            if self.davidson == 'locked':
+                with self._response_env():
+                    return self._locked_solve(x0, nstates)
             return super().kernel(x0=x0, nstates=nstates)
-        # honour xc_kernel for the response (same as _KernelXCMixin.kernel)
-        if self.xc_kernel is None:
+        # response xc / collinear scheme, as in _KernelXCMixin.kernel
+        with self._response_env():
             return self._direct_solve(nstates)
-        with lib.temporary_env(self._scf, xc=self.xc_kernel):
-            return self._direct_solve(nstates)
+
+    def _tr_operator(self):
+        '''(K, (nocc, nvir)): time reversal on TDA amplitudes z (..., nocc, nvir), K z = T_o^* z^* T_v^T with
+        K phi_q = sum_p phi_p T_pq on the reference orbitals; None when the orbitals are not Kramers paired (T
+        not block diagonal / unitary in the occupied and virtual spaces) or the reference is not a spinor one'''
+        mf = self._scf
+        mol = mf.mol
+        if not hasattr(mol, 'sph2spinor_coeff') or mf.mo_coeff is None or mol.spin != 0:
+            return None
+        mask = self.get_frozen_mask()
+        C = numpy.asarray(mf.mo_coeff)[:, mask]
+        occ = numpy.asarray(mf.mo_occ)[mask]
+        nao = mol.nao_nr()
+        try:
+            U = numpy.vstack(mol.sph2spinor_coeff())
+        except Exception:
+            return None
+        if C.shape[0] != U.shape[1]:
+            return None
+        Cg = U @ C
+        KCg = numpy.vstack([-Cg[nao:].conj(), Cg[:nao].conj()])
+        s = mol.intor_symmetric('int1e_ovlp')
+        SKC = numpy.vstack([s @ KCg[:nao], s @ KCg[nao:]])
+        T = Cg.conj().T @ SKC
+        o, v = occ > 0, occ == 0
+        To, Tv = T[o][:, o], T[v][:, v]
+        tol = self.KRAMERS_TOL
+        if (abs(T[o][:, v]).max(initial=0) > tol or abs(T[v][:, o]).max(initial=0) > tol
+                or abs(To @ To.conj().T - numpy.eye(len(To))).max() > tol
+                or abs(Tv @ Tv.conj().T - numpy.eye(len(Tv))).max() > tol):
+            return None
+        Toc = numpy.ascontiguousarray(To.conj())
+        TvT = numpy.ascontiguousarray(Tv.T)
+
+        def k(z):
+            return lib.einsum('ji,xia,ab->xjb', Toc, numpy.asarray(z).conj(), TvT)
+        return k, (int(o.sum()), int(v.sum()))
+
+    def _locked_solve(self, x0=None, nstates=None):
+        '''pyscf's TDA.kernel with the locking Davidson of socutils.tdscf.lr_locked'''
+        from pyscf.lib import logger
+        from socutils.tdscf import lr_locked
+        cpu0 = (logger.process_clock(), logger.perf_counter())
+        mf = self._scf
+        if mf.mo_energy is None:
+            mf.run()
+        self.check_sanity()
+        self.dump_flags()
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
+        log = logger.Logger(self.stdout, self.verbose)
+        vind, hdiag = self.gen_vind(mf)
+
+        def precond(r, e):
+            d = hdiag - (e - self.level_shift)
+            d[abs(d) < 1e-8] = 1e-8
+            return r / d
+
+        thr = self.positive_eig_threshold
+
+        def pick(w, v):
+            idx = numpy.where(w > thr)[0]
+            return w[idx], v[:, idx]
+
+        tr = self._tr_operator() if self.kramers else None
+        if self.kramers is True and tr is None:
+            raise RuntimeError('kramers=True: the reference orbitals are not Kramers paired')
+        project = None
+        if tr is not None:
+            log.info('TDA: time-reversal adapted (TR-even trial vectors, real subspace)')
+            nocc_, nvir_ = tr[1]
+
+            def project(xs):
+                z = numpy.asarray(xs).reshape(-1, nocc_, nvir_)
+                return ((z + tr[0](z)) * .5).reshape(len(z), -1)
+        if x0 is None:
+            if tr is not None:
+                # P(e) and P(i e) span the TR-even space of the unit vectors e of the guess
+                g = numpy.asarray(self.get_init_guess(mf, 2 * nstates + 4), dtype=numpy.complex128)
+                x0 = numpy.vstack([g, 1j * g])
+            else:
+                # a wider guess than nstates: a minimal one can miss roots (AuH x2c-SVPall: the 6th root)
+                x0 = self.get_init_guess(mf, 2 * nstates + 4)
+        # buffer roots, converged too and dropped: with locking a root missing from the subspace would stay
+        # missing once the lowest nstates Ritz roots converge (AuH x2c-SVPall PBE0: the 3.826 eV root under
+        # the 3.877 eV pair at nstates = 6; pyscf's lr_eigh misses the 3.803 eV pair at nstates = 4)
+        nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        ms = _max_space(self, nstates + nbuf, hdiag.size, 2)
+        with _coarse_response(self, log) as setup:
+            vind0, refine = setup(vind, self.gen_vind, nstates, nbuf)
+            conv, e, x1 = lr_locked.eigh(vind0, x0, precond, nstates + nbuf, tol=_root_tol(self, nstates, nbuf),
+                                         lindep=self.lindep, max_cycle=self.max_cycle, max_space=ms,
+                                         pick=pick, log=log, project=project, real=tr is not None,
+                                         min_batch=self.min_batch, refine=refine)
+        conv, e, x1 = conv[:nstates], e[:nstates], x1[:nstates]
+        self.converged, self.e = conv, e
+        mo_occ = mf.mo_occ[self.get_frozen_mask()]
+        nocc = int((mo_occ > 0).sum())
+        nvir = mo_occ.size - nocc
+        self.xy = [(xi.reshape(nocc, nvir), 0) for xi in x1]
+        if self.chkfile:
+            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
+            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
+        log.timer('TDA (locked Davidson)', *cpu0)
+        self._finalize()
+        return self.e, self.xy
 
     def _coupling_vector(self):
         '''g_ia = <Phi_i^a|H-E0|Phi_0> in this module's amplitude convention.
@@ -506,8 +897,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
             w, c = numpy.linalg.eigh(M)
             nstates = min(nstates, nov + 1)
             self.e = w[:nstates]
-            self.reference_weight = (c[0, :nstates].conj() *
-                                     c[0, :nstates]).real
+            self.c0 = c[0, :nstates].copy()   # reference amplitude per state
+            self.reference_weight = (self.c0.conj() * self.c0).real
             self.xy = [(c[1:, i].reshape(nocc, nvir), 0)
                        for i in range(nstates)]
         else:
@@ -517,6 +908,7 @@ class TDA(_KernelXCMixin, _ghf.TDA):
             w, c = numpy.linalg.eigh(A)
             nstates = min(nstates, nov)
             self.e = w[:nstates]
+            self.c0 = None
             self.reference_weight = None
             self.xy = [(c[:, i].reshape(nocc, nvir), 0)
                        for i in range(nstates)]
@@ -527,7 +919,8 @@ class TDA(_KernelXCMixin, _ghf.TDA):
 
     def gen_vind(self, mf=None):
         if not self.mo_driven:
-            return super().gen_vind(mf)
+            out = self._gen_vind_fxc_mo(mf)
+            return out if out is not None else super().gen_vind(mf)
         if mf is None:
             mf = self._scf
         from pyscf.scf import hf
@@ -594,6 +987,68 @@ class TDA(_KernelXCMixin, _ghf.TDA):
         return vind, hdiag
 
 
+    def _gen_vind_fxc_mo(self, mf=None):
+        '''the TDA matvec with the response J / K AO-driven (mf.get_jk: RIJ + multi-density COSX) and the f_xc
+        in the MO form fused on the grid (socutils.dft.fxc_2c.mo_response: no transition density matrices for
+        the xc part); None where it does not apply (fxc_2c.use_mo) and pyscf's operation runs'''
+        from pyscf.scf import hf
+        from pyscf.lib import logger
+        from socutils.dft import fxc_2c
+        if mf is None:
+            mf = self._scf
+        if not isinstance(mf, hf.KohnShamDFT) or getattr(self, 'wfnsym', None) is not None:
+            return None
+        ni = mf._numint
+        if not hasattr(ni, 'U') or ni.collinear[0] not in ('n', 'm') or mf.do_nlc():
+            return None
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mf.mol.spin)
+        xctype = ni._xc_type(mf.xc)
+        if omega != 0 or xctype not in ('LDA', 'GGA'):
+            return None
+        mol = mf.mol
+        mask = self.get_frozen_mask()
+        mo_coeff = mf.mo_coeff[:, mask]
+        mo_energy = mf.mo_energy[mask]
+        mo_occ = mf.mo_occ[mask]
+        occidx = numpy.where(mo_occ == 1)[0]
+        viridx = numpy.where(mo_occ == 0)[0]
+        nocc, nvir = len(occidx), len(viridx)
+        if not fxc_2c.use_mo(mol.nao, nocc, nvir):
+            return None
+        orbo, orbv = mo_coeff[:, occidx], mo_coeff[:, viridx]
+        t0 = (logger.process_clock(), logger.perf_counter())
+        rho0, vxc, fxc = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mf.mo_coeff, mf.mo_occ, 1)
+        iso = fxc_2c.isotropic_kernel(fxc, xctype)
+        if iso is None:
+            return None
+        rho0 = vxc = fxc = None
+        logger.timer(self, 'response xc kernel (isotropic, MO form)', *t0)
+        # the GHF (scalar AO x spin) orbitals of the grid work
+        orbo_g = numpy.ascontiguousarray(ni.U @ orbo)
+        orbv_g = numpy.ascontiguousarray(ni.U @ orbv)
+        e_ia = mo_energy[viridx] - mo_energy[occidx, None]
+        hdiag = e_ia.ravel().real
+        hybrid = ni.libxc.is_hybrid_xc(mf.xc)
+        log = logger.new_logger(self)
+
+        def vind(zs):
+            zs = numpy.asarray(zs).reshape(-1, nocc, nvir)
+            dms = lib.einsum('xov,pv,qo->xpq', zs, orbv, orbo.conj())
+            if hybrid:
+                vj, vk = mf.get_jk(mol, dms, hermi=0)
+                v1ao = vj - hyb * vk
+            else:
+                v1ao = mf.get_j(mol, dms, hermi=0)
+            v1mo = lib.einsum('xpq,qo,pv->xov', v1ao, orbo, orbv.conj())
+            t1 = (logger.process_clock(), logger.perf_counter())
+            v1mo += fxc_2c.mo_response(ni, mol, mf.grids, iso, orbo_g, orbv_g, zs, xctype, mf.max_memory)
+            log.timer_debug1('f_xc (MO form, %d vectors)' % zs.shape[0], *t1)
+            v1mo += zs * e_ia
+            return v1mo.reshape(v1mo.shape[0], -1)
+
+        return vind, hdiag
+
+
 CIS = TDA
 
 
@@ -604,6 +1059,8 @@ class _PairedRPA(_ghf.TDHF):
     recommended default.'''
 
     conv_tol = 1e-6
+    reference_weight = None     # read by _KernelXCMixin._finalize (the reference-coupled TDA only)
+    c0 = None
 
     def kernel(self, x0=None, nstates=None):
         import numpy as np
@@ -641,4 +1098,189 @@ class _PairedRPA(_ghf.TDHF):
 
 
 class TDRPA(_KernelXCMixin, _PairedRPA):
-    pass
+    '''Full RPA / TDDFT.  On a Kramers-restricted closed-shell reference (kramers = 'auto' / True) it is solved in
+    real arithmetic on the time-reversal even amplitudes (davidson = 'ssf', socutils.tdscf.lr_locked.rpa_eig);
+    otherwise (or davidson = 'paired') with the paired complex Davidson of socutils.tdscf.lr_davidson.
+
+    Time-reversal structure.  With the antilinear B^(z) = B z^* the complex RPA equations A X + B Y = w X,
+    B^* X + A^* Y = -w Y read (A + B^) P = w Q, (A - B^) Q = w P for P = X + Y^*, Q = X - Y^*; A +- B^ are
+    real-linear and symmetric in Re <u, v>.  Both commute with the time reversal K z = T_o^* z^* T_v^T (K^2 = +1),
+    so P and Q can be taken TR even, a real space of dimension nocc nvir on which A +- B^ are real symmetric
+    matrices (the TR-odd half i P gives the same roots again).  The transition density of (X, Y) is
+    D(X) + D(Y^*)^H, D(z) = C_v z^T C_o^H, TR even for TR-even P, Q:
+
+        A + B^ acts on the Hermitian part D(P) + D(P)^H:        TR even and Hermitian: the charge density n
+                                                                (real), m = 0 -> J, exact exchange, f_nn
+        A - B^ acts on the anti-Hermitian part D(Q) - D(Q)^H:   n = 0, the magnetisation i m (m real) ->
+                                                                no J, exact exchange, f_mm
+
+    so, unlike the nonrelativistic singlet case, A - B is not the orbital-energy difference for a pure functional
+    (the spin-orbit-mixed magnetisation response f_mm enters), and exact exchange enters both.  One response of the
+    density D(u) + D(v)^H (u = (p + q) / 2, v = (p - q) / 2) gives (A + B^) p and (A - B^) q at once (the top and
+    the conjugated bottom block of the complex RPA matvec, top +- bottom^*): a TR-even density with Im n = 0, Re m = 0,
+    the half channels / K pieces of the TR-adapted TDA, one TDA-sized response per (p, q) pair.  The same response
+    operator as the complex path (exact, RIJ, RIJ + COSX), so both give the same roots.
+
+    A +- B^ positive definite <=> the reference is stable; otherwise (lr_locked.RPAInstability) a warning and,
+    with instability = 'tda', the TR-adapted TDA roots instead (self.unstable = True), 'raise' re-raises.'''
+    davidson = 'ssf'            # 'ssf' (TR-adapted real solve where kramers applies) | 'paired'
+    kramers = 'auto'
+    KRAMERS_TOL = 1e-6
+    nbuffer = None              # extra roots of the locked solve (None: max(2, nstates // 2))
+    buffer_tol = None           # residual tolerance of the buffer roots (None: conv_tol)
+    min_batch = None            # lr_locked: batches topped up to this many vectors by further directions per root
+    # The coarse phase (RIJ / COSX references): the Davidson runs with the COSX response K on grid level
+    # coarse_grid and f_xc on coarse_fxc_grids ('auto': the CP-SCF grid when coarse_grid applies; 'cpscf', a
+    # Grids, or None: the response grid) until every residual is below coarse_tol x conv_tol, then restarts from
+    # the Ritz vectors on the full operator and converges to conv_tol there (coarse_relax_buffer: the buffer
+    # roots, already found, to coarse_tol x conv_tol only).  BiPh3 PBE0 DYVTZ-SF, 10 roots: TDA 2194 -> 1340 s,
+    # RPA 2446 -> 1985 s, excitation energies within 2e-10 / 7e-9 Eh; with the default max_space as well (old
+    # default against both) TDA 2350 -> 1257 s, RPA 2655 -> 1962 s.  coarse_grid = None: off.
+    coarse_grid = 0
+    coarse_tol = 100.
+    coarse_fxc_grids = 'auto'
+    coarse_relax_buffer = True
+    max_space = None            # lr_locked's subspace bound (None: _max_space, 20 nroots within the memory)
+    instability = 'tda'         # A +- B not positive definite: 'tda' (warn, TDA roots) | 'raise'
+    unstable = None
+
+    # The RPA structure (B^T = B, A^H = A; the paired solver's free partner matvec, this solver's one response
+    # per (p, q) pair) needs a response with V(D^H) = V(D)^H.  Exact J / K, RIJ and f_xc have it; the COSX
+    # response K (the symmetric bilinear form of the overlap fit, spinor_jk.RESPONSE_SYMMETRIC) does not, to
+    # 5e-5 of |V| (AuH x2c-SVPall), so with COSX the paired and the TR-adapted solves differ by ~1e-8 Eh.
+    # hsym_response = True takes 1/2 (V(D) + V(D^H)^H) (twice the response cost; for validation): both solvers
+    # then solve the same RPA.
+    hsym_response = False
+
+    _tr_operator = TDA._tr_operator
+
+    def gen_vind(self, mf=None):
+        vind, hdiag = super().gen_vind(mf)
+        if not self.hsym_response:
+            return vind, hdiag
+        nov = hdiag.size // 2
+
+        def pair(z):
+            return numpy.hstack([z[:, nov:].conj(), z[:, :nov].conj()])
+
+        def vind_h(xys):
+            # K p(b) = -p(K b) for the RPA matrix K = [[A, B], [-B^*, -A^*]], p(x, y) = (y^*, x^*)
+            z = numpy.asarray(xys).reshape(-1, 2 * nov)
+            return (numpy.asarray(vind(z)).reshape(-1, 2 * nov) - pair(numpy.asarray(vind(pair(z)))
+                                                                         .reshape(-1, 2 * nov))) * .5
+        return vind_h, hdiag
+
+    def kernel(self, x0=None, nstates=None):
+        with self._response_env():
+            if self.davidson == 'ssf' and self.kramers:
+                tr = self._tr_operator()
+                if tr is None and self.kramers is True:
+                    raise RuntimeError('kramers=True: the reference orbitals are not Kramers paired')
+                if tr is not None:
+                    return self._ssf_solve(tr, x0, nstates)
+            return _PairedRPA.kernel(self, x0=x0, nstates=nstates)
+
+    def gen_vind_pm(self, mf=None):
+        '''(aop, hdiag): aop(ps, qs) -> ((A + B^) ps, (A - B^) qs) for rows of amplitudes (n, nocc nvir), one
+        response density D(u) + D(v)^H per pair through the complex RPA matvec; hdiag = e_a - e_i'''
+        vind, hdiag = self.gen_vind(mf if mf is not None else self._scf)
+        nov = hdiag.size // 2
+        hdiag = numpy.asarray(hdiag[:nov]).real
+
+        def aop(ps, qs):
+            ps = numpy.asarray(ps).reshape(-1, nov)
+            qs = numpy.asarray(qs).reshape(-1, nov)
+            u = (ps + qs) * .5
+            v = (ps - qs) * .5
+            hx = numpy.asarray(vind(numpy.hstack([u, v.conj()]))).reshape(-1, 2 * nov)
+            top = hx[:, :nov]                   # A X + B Y
+            bot = -hx[:, nov:].conj()           # (B^* X + A^* Y)^* = B X^* + A Y^*
+            return top + bot, top - bot
+        return aop, hdiag
+
+    def _ssf_solve(self, tr, x0=None, nstates=None):
+        from pyscf.lib import logger
+        from socutils.tdscf import lr_locked
+        cpu0 = (logger.process_clock(), logger.perf_counter())
+        mf = self._scf
+        if mf.mo_energy is None:
+            mf.run()
+        self.check_sanity()
+        self.dump_flags()
+        if nstates is None:
+            nstates = self.nstates
+        else:
+            self.nstates = nstates
+        log = logger.Logger(self.stdout, self.verbose)
+        log.info('TDRPA: time-reversal adapted (TR-even P = X + Y*, Q = X - Y*, real A +- B, SSF Davidson)')
+        aop, hdiag = self.gen_vind_pm(mf)
+        k, (nocc, nvir) = tr
+
+        def project(xs):
+            z = numpy.asarray(xs).reshape(-1, nocc, nvir)
+            return ((z + k(z)) * .5).reshape(len(z), -1)
+
+        def precond(r, e):
+            d = hdiag - (e - self.level_shift)
+            d[abs(d) < 1e-8] = 1e-8
+            return r / d
+
+        thr = self.positive_eig_threshold
+
+        def pick(w):
+            return numpy.where(w > thr)[0]
+
+        if x0 is None:
+            ng = min(hdiag.size, 2 * nstates + 4)
+            idx = numpy.argsort(hdiag, kind='stable')[:ng]
+            g = numpy.zeros((ng, hdiag.size), dtype=numpy.complex128)
+            g[numpy.arange(ng), idx] = 1
+            x0 = numpy.vstack([g, 1j * g])
+        else:
+            x0 = numpy.asarray(x0)
+            x0 = x0.reshape(-1, x0.shape[-1])[:, :hdiag.size]
+        nbuf = self.nbuffer if self.nbuffer is not None else max(2, nstates // 2)
+        nroots = min(nstates + nbuf, hdiag.size)
+        ms = _max_space(self, nroots, hdiag.size, 4)
+        try:
+            with _coarse_response(self, log) as setup:
+                aop0, refine = setup(aop, self.gen_vind_pm, nstates, nroots - nstates)
+                conv, e, P, Q = lr_locked.rpa_eig(aop0, x0, precond, nroots,
+                                                  tol=_root_tol(self, nstates, nroots - nstates), lindep=self.lindep,
+                                                  max_cycle=self.max_cycle, max_space=ms, pick=pick,
+                                                  log=log, project=project, min_batch=self.min_batch,
+                                                  refine=refine)
+        except lr_locked.RPAInstability as err:
+            self.unstable = True
+            log.warn('TDRPA: reference instability (%s): the RPA has imaginary / non-positive roots here', err)
+            if self.instability == 'raise':
+                raise
+            log.warn('TDRPA: returning the time-reversal adapted TDA roots instead (td.instability = "raise" '
+                     'to stop)')
+            return self._tda_fallback(nstates)
+        self.unstable = False
+        conv, e, P, Q = conv[:nstates], e[:nstates], P[:nstates], Q[:nstates]
+        self.converged, self.e = conv, e
+        X = (P + Q) * .5
+        Y = ((P - Q) * .5).conj()
+        self.xy = [(x.reshape(nocc, nvir), y.reshape(nocc, nvir)) for x, y in zip(X, Y)]
+        if self.chkfile:
+            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
+            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
+        log.timer('TDRPA (TR-adapted SSF Davidson)', *cpu0)
+        self._finalize()
+        return self.e, self.xy
+
+    def _tda_fallback(self, nstates):
+        td = TDA(self._scf)
+        for key in ('frozen', 'conv_tol', 'max_cycle', 'lindep', 'level_shift', 'positive_eig_threshold',
+                    'xc_kernel', 'collinear', 'picture_change', 'kramers', 'KRAMERS_TOL', 'nbuffer', 'max_space',
+                    'min_batch', 'coarse_grid', 'coarse_tol', 'buffer_tol',
+                    'coarse_fxc_grids', 'fxc_grids', 'coarse_relax_buffer',
+                    'verbose', 'stdout', 'chkfile'):
+            if hasattr(self, key):
+                setattr(td, key, getattr(self, key))
+        e, xy = td.kernel(nstates=nstates)
+        self.converged, self.e = td.converged, e
+        self.xy = [(x, numpy.zeros_like(x)) for x, _ in xy]
+        return self.e, self.xy

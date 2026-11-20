@@ -7,15 +7,17 @@
 
 import numpy as np
 from socutils.somf import eamf
-from socutils.scf import spinor_hf, linear_dhf
+from socutils.scf import spinor_hf, double_group_symm
 
 def dhf_from_mp(dhf, mp=None):
     mol = dhf.mol
     gaunt = dhf.with_gaunt
     breit = dhf.with_breit
     if mp is None:
-        if isinstance(dhf, linear_dhf.SymmDHF):
-            mp = spinor_hf.SpinorSymmSCF(mol, symmetry=dhf.symmetry, occup=dhf.occupation)
+        if isinstance(dhf, double_group_symm.DoubleGroupSymm):
+            mp = double_group_symm.SymAdaptedUHF(mol)
+            mp._doublegroupname = dhf._doublegroupname
+            mp.irrep_nelec = dict(dhf.irrep_nelec)
         else:
             mp = spinor_hf.SpinorSCF(mol)
         mp.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='eamf', with_gaunt=gaunt,  with_breit=breit)

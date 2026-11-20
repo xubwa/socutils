@@ -14,18 +14,22 @@ def SymOrth(C,S=1):
    matrix S (i.e., such that Cnew^T S Cnew == id)."""
    return matmul(C, sqrtminv(reduce(matmul, (C.T.conj(),S,C))))
 
-def get_iao_fromS(s1, s2, s12, coeff):
+def get_iao_fromS(s1, s2, s12, coeff, orthogonalize=True):
     nbas = s1.shape[0]
     s1inv = scipy.linalg.inv(s1)
     s2inv = scipy.linalg.inv(s2)
     proj12 = matmul(s1inv,s12)
-    
+
     coeff_tilde = SymOrth(reduce(matmul, (s1inv,s12,s2inv,s12.T.conj(),coeff)), s1)
-    
+
     Oi1 = reduce(matmul, (coeff, coeff.T.conj(), s1))
     Oti1 = reduce(matmul, (coeff_tilde, coeff_tilde.T.conj(), s1))
-    
+
     iao = matmul(np.eye(nbas)-Oi1-Oti1+2.0*matmul(Oi1, Oti1), proj12)
+    if not orthogonalize:
+        # non-orthogonal IAOs keep a 1:1 per-reference-AO character, needed
+        # when individual columns are selected afterwards (e.g. AVAS)
+        return iao
     return SymOrth(iao, s1)
 
 def get_iao(mol, mo_occ, spinor = False):
@@ -152,7 +156,68 @@ def get_ibo_spinor(ovlp, ao_slices_minao, coeff, iao, p, maxiter, gradthreshold)
              
     return matmul(iao, SymOrth(Ca))
 
-def get_ibo(mol, coeff_occ, p=4, maxiter = 200, gradthreshold = 1e-8, spinor = False):
+def time_reversal(mol, coeff):
+    '''Apply the time-reversal operator T to spinor orbital coefficients.'''
+    trmap = mol.time_reversal_map()
+    idx = np.abs(trmap) - 1
+    sgn = np.sign(trmap)
+    tc = np.zeros_like(coeff)
+    tc[idx] = sgn[:, None] * coeff.conj()
+    return tc
+
+def kramers_pair(mol, orbs, ovlp=None, tol=1e-6):
+    '''Rotate an orthonormal set of spinor orbitals spanning a time-reversal
+    closed space into explicit Kramers pairs, returned as adjacent columns
+    (psi_1, T psi_1, psi_2, T psi_2, ...).
+
+    Localized orbitals from a Kramers-restricted reference are degenerate in
+    the localization objective within each set of orbitals sharing the same
+    atomic populations, so the converged orbitals are generally *not* Kramers
+    partners of each other.  This post-processing only mixes orbitals within
+    such degenerate blocks (atomic populations are invariant), pairing the
+    "purest" orbitals first: each iteration picks the orbital whose T image
+    is closest to a single remaining partner, keeps it and its exact T image,
+    and projects both out of the rest.
+    '''
+    if ovlp is None:
+        ovlp = mol.intor('int1e_ovlp_spinor')
+    nmo = orbs.shape[1]
+    assert nmo % 2 == 0, 'Kramers pairing needs an even number of orbitals'
+
+    # the span must be closed under T (Kramers-restricted reference)
+    m = reduce(matmul, (orbs.T.conj(), ovlp, time_reversal(mol, orbs)))
+    closure = np.linalg.norm(m, axis=0)
+    if abs(closure - 1.0).max() > tol:
+        raise ValueError('orbital span is not closed under time reversal '
+                         '(max deviation %.2e); a Kramers-restricted set of '
+                         'orbitals is required' % abs(closure - 1.0).max())
+
+    rem = orbs.copy()
+    paired = []
+    while rem.shape[1] > 0:
+        trem = time_reversal(mol, rem)
+        m = reduce(matmul, (rem.T.conj(), ovlp, trem))
+        i = np.argmax(np.abs(m).max(axis=0))
+        v = rem[:, i]
+        w = trem[:, i]
+        paired += [v, w]
+        if rem.shape[1] == 2:
+            break
+        # v is a member of rem, so only w overlaps the remaining orbitals.
+        # Drop the remaining orbital most similar to w, project w out of the
+        # others, and re-orthonormalize with the minimal-perturbation Loewdin
+        # scheme.  (Canonical orthonormalization is unusable here: the
+        # remaining overlap matrix is near-identity, its eigenvectors within
+        # the degenerate eigenvalue 1 are arbitrary and would mix orbitals
+        # across different localization blocks.)
+        rest = np.delete(rem, i, axis=1)
+        wov = matmul(w.conj(), matmul(ovlp, rest))
+        rest = np.delete(rest, np.argmax(np.abs(wov)), axis=1)
+        rest = rest - np.outer(w, matmul(w.conj(), matmul(ovlp, rest)))
+        rem = SymOrth(rest, ovlp)
+    return np.array(paired).T
+
+def get_ibo(mol, coeff_occ, p=4, maxiter = 200, gradthreshold = 1e-8, spinor = False, kramers = True):
     mol_minao = reference_mol(mol, 'minao')
     if(spinor):
         s1 = mol.intor('int1e_ovlp_spinor')
@@ -165,9 +230,12 @@ def get_ibo(mol, coeff_occ, p=4, maxiter = 200, gradthreshold = 1e-8, spinor = F
         s12 = gto.intor_cross('int1e_ovlp', mol, mol_minao)
         ao_slices_minao = mol_minao.aoslice_by_atom()
     iao = get_iao_fromS(s1, s2, s12, coeff_occ)
-    
+
     if(spinor):
-        return get_ibo_spinor(s1, ao_slices_minao, coeff_occ, iao, p, maxiter, gradthreshold)
+        ibos = get_ibo_spinor(s1, ao_slices_minao, coeff_occ, iao, p, maxiter, gradthreshold)
+        if kramers:
+            ibos = kramers_pair(mol, ibos, ovlp=s1)
+        return ibos
     else:
         return get_ibo_scalar(s1, ao_slices_minao, coeff_occ, iao, p, maxiter, gradthreshold)
     

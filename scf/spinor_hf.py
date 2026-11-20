@@ -12,6 +12,7 @@ from pyscf import lib
 from pyscf.gto import mole
 from pyscf.lib import logger
 from pyscf.scf import hf, dhf, ghf, _vhf
+from socutils.prop.mixin import SpinorPropertyMixin
 import re
 try:
     from socutils.lib import zquatev
@@ -43,6 +44,22 @@ class _DFJHF(df.df_jk._DFHF):
         t0 = (logger.process_clock(), logger.perf_counter())
         nao = mol.nao_nr()   # real spherical AO dimension (matches DF integrals)
         vj = vk = None
+        mo_coeff = getattr(dm, 'mo_coeff', None)
+        mo_occ   = getattr(dm, 'mo_occ',   None)
+        # J and the MO-based K in one pass over the DF vectors (they are read
+        # from disk for large systems): a single Hermitian density with MOs
+        if (with_j and with_k and self.with_df and hermi and numpy.ndim(dm) == 2
+                and mo_coeff is not None and mo_occ is not None):
+            dm_sph   = spinor2sph(mol, dm)
+            dm_trace = dm_sph[:nao, :nao] + dm_sph[nao:, nao:]
+            # the imaginary part of a Hermitian D_aa + D_bb is antisymmetric
+            # and does not contribute to J with symmetric (P|mu nu)
+            vk, vj_ao = self._get_k_mo(mol, mo_coeff, mo_occ, omega, dm_j=dm_trace.real)
+            vj_sph = numpy.zeros(dm_sph.shape, dtype=complex)
+            vj_sph[:nao, :nao] = vj_sph[nao:, nao:] = vj_ao
+            vj = sph2spinor(mol, vj_sph)
+            logger.timer(self, 'vj and vk (one pass)', *t0)
+            return vj, vk
 
         # --- J ---
         # J depends only on the total charge density dm_aa + dm_bb.
@@ -71,7 +88,10 @@ class _DFJHF(df.df_jk._DFHF):
             mo_occ   = getattr(dm, 'mo_occ',   None)
             if mo_coeff is not None and mo_occ is not None:
                 vk = self._get_k_mo(mol, mo_coeff, mo_occ, omega)
-            else:
+            elif FACTOR_DM and hermi == 1 and numpy.ndim(dm) == 2:
+                # an untagged density (the initial guess): K from its eigenvectors
+                vk = _get_k_factored(self, mol, dm)
+            if vk is None and not (mo_coeff is not None and mo_occ is not None):
                 # Fallback: DM-based K via ghf.get_jk (first iteration etc.)
                 logger.warn(self, 'mo_coeff not tagged on dm, using DM-based K')
                 if not with_j:
@@ -98,7 +118,7 @@ class _DFJHF(df.df_jk._DFHF):
         logger.timer(self, 'vj and vk', *t0)
         return vj, vk
 
-    def _get_k_mo(self, mol, mo_coeff, mo_occ, omega=None):
+    def _get_k_mo(self, mol, mo_coeff, mo_occ, omega=None, dm_j=None):
         """Build K in spinor basis via MO half-transform of DF 3-index integrals.
 
         DF integrals (P|mu nu) live in the real spherical AO basis (nao = mol.nao_nr()).
@@ -119,6 +139,9 @@ class _DFJHF(df.df_jk._DFHF):
                       = LaR.T@LaR + LaI.T@LaI + i*(LaI.T@LaR - LaR.T@LaI)
 
         The C library reads the compressed-triangular eri directly (no unpack_tril).
+
+        With dm_j (a real symmetric (nao, nao) density) the Coulomb matrix of
+        dm_j is accumulated in the same pass and (vk, vj) is returned.
         """
         import ctypes
         from pyscf.ao2mo import _ao2mo
@@ -135,12 +158,39 @@ class _DFJHF(df.df_jk._DFHF):
 
         nocc_mask = mo_occ > 0
         nocc = int(nocc_mask.sum())
+        if dm_j is not None:
+            dj = dm_j + dm_j.T
+            dj[numpy.diag_indices(nao)] *= .5
+            dj_tril = lib.pack_tril(dj)
+            vj_tril = numpy.zeros_like(dj_tril)
         if nocc == 0:
-            return numpy.zeros((n2c, n2c), dtype=complex)
+            vk0 = numpy.zeros((n2c, n2c), dtype=complex)
+            if dm_j is None:
+                return vk0
+            for eri1 in self.with_df.loop():
+                vj_tril += lib.dot(lib.dot(eri1, dj_tril[:, None]).T, eri1).ravel()
+            return vk0, lib.unpack_tril(vj_tril)
 
         # Occupied spinor MOs weighted by sqrt(f_i), then projected to sph GHF basis
         C_occ     = mo_coeff[:, nocc_mask] * numpy.sqrt(mo_occ[nocc_mask])
         C_occ_sph = c2 @ C_occ   # (2*nao, nocc); first nao rows = alpha, last = beta
+        # Kramers pairs (u, Theta u): only the unbarred half is transformed
+        kramers = getattr(self, 'kramers_k', True) and _kramers_unbarred(C_occ_sph, nao)
+        if kramers is not False:
+            C_occ_sph = kramers
+            nocc = C_occ_sph.shape[1]
+            logger.debug(self, 'DF-K: Kramers-paired occupied spinors, %d unbarred', nocc)
+
+        if DFK_GRAM:
+            # one real half transformation of all four components and one 4 nao x 4 nao
+            # rank-k update per factor block (scf.rik_2c)
+            from socutils.scf import rik_2c
+            vjs, vks = rik_2c.get_jk(self.with_df, [C_occ_sph], [] if dm_j is None else [dm_j],
+                                     kramers=[kramers is not False], max_memory=self.max_memory,
+                                     verbose=self.verbose)
+            if dm_j is not None:
+                return sph2spinor(mol, vks[0]), vjs[0]
+            return sph2spinor(mol, vks[0])
 
         # Four real Fortran-order arrays for the C half-transform library
         # Each has shape (nao, nocc), matching the DF integral AO index
@@ -176,6 +226,8 @@ class _DFJHF(df.df_jk._DFHF):
                  null, ctypes.c_int(0))
 
         for eri1 in self.with_df.loop(blksize):
+            if dm_j is not None:
+                vj_tril += lib.dot(lib.dot(eri1, dj_tril[:, None]).T, eri1).ravel()
             naux = eri1.shape[0]
             LaR = buf_aR[:naux * nocc]
             LaI = buf_aI[:naux * nocc]
@@ -203,207 +255,74 @@ class _DFJHF(df.df_jk._DFHF):
             vk_sph[:nao, nao:] += K_ab
             vk_sph[nao:, :nao] += K_ab.conj().T   # K_ba = K_ab†
 
+        if kramers is not False:
+            # unbarred sums A = K_aa, B = K_bb, C = K_ab; the barred partners
+            # (Theta u: alpha = -u_b*, beta = u_a*, and real DF vectors) add
+            # B* to K_aa and -C^T to K_ab
+            A = vk_sph[:nao, :nao].copy()
+            B = vk_sph[nao:, nao:].copy()
+            C = vk_sph[:nao, nao:].copy()
+            vk_sph[:nao, :nao] = A + B.conj()
+            vk_sph[nao:, nao:] = B + A.conj()
+            vk_sph[:nao, nao:] = C - C.T
+            vk_sph[nao:, :nao] = vk_sph[:nao, nao:].conj().T
+
+        if dm_j is not None:
+            return sph2spinor(mol, vk_sph), lib.unpack_tril(vj_tril)
         return sph2spinor(mol, vk_sph)
 
 
-def symmetry_label(mol, symmetry=None):
-    if symmetry is None:
-        raise ValueError("Symmetry of orbital desired here.")
-    if 'sph' not in symmetry and 'linear' not in symmetry:
-        raise ValueError("Only spherical and linear symmetry supported for now.")
-    else:
-        labels = mol.spinor_labels()
-        irrep = dict()
-        processed_labels = []
-        for label in labels:
-            label = label.split()
-            match = re.search(r'[a-zA-Z](.*?),(.*?)$', label[2])
-            if match:
-                #print(match.group(0), match.group(1), match.group(2))
-                full_label = match.group(0)
-                j_val = match.group(1)
-                jz_val = match.group(2)
-            processed_labels.append([full_label, j_val, jz_val])
-        if 'sph' in symmetry:
-            print(f'Spherical symmetry assigned')
-            for ilabel, label in enumerate(processed_labels):
-                full_label = label[0]
-                if irrep.get(full_label) is not None:
-                    irrep[full_label].append(ilabel)
-                else:
-                    irrep[full_label] = [ilabel]
-        elif 'linear' in symmetry:
-            print(f'Linear symmetry assigned')
-            for ilabel, label in enumerate(processed_labels):
-                full_label=label[2]
-                if irrep.get(full_label) is not None:
-                    irrep[full_label].append(ilabel)
-                else:
-                    irrep[full_label] = [ilabel]
-        return irrep
+DFK_GRAM = True   # _DFJHF._get_k_mo by scf.rik_2c (else the four-buffer AO2MO / GEMM loop below)
+FACTOR_DM = True  # _DFJHF.get_jk: K of an untagged Hermitian density from its eigenvectors (scf.rik_2c)
+FACTOR_DM_RANK = .75   # ... while its rank is at most this * 2 nao (else the DM-based K)
 
-def eig(mf, h, s, irrep=None):
-    '''Solve generalized eigenvalue problem, for each irrep.  The
-    eigenvalues and eigenvectors are not sorted to ascending order.
-    Instead, they are grouped based on irreps.
-    '''
-    print('symmetry adapted eigen value')
-    mol = mf.mol
 
-    if irrep is None:
-        raise ValueError("An irrep is desired as input")
-    cs = []
-    es = []
-    nmo = mf.mol.nao_2c()
-    e = np.zeros(nmo)
-    c = np.zeros((nmo, nmo), dtype=complex)
-    irrep_tag = np.empty(nmo, dtype='U10')
-    for ir in irrep:
-        ir_idx = irrep[ir]
-        hi = h[np.ix_(ir_idx, ir_idx)]
-        si = s[np.ix_(ir_idx, ir_idx)]
-        ei, ci = mf._eigh(h[np.ix_(ir_idx,ir_idx)], s[np.ix_(ir_idx,ir_idx)])
-        c[np.ix_(ir_idx,ir_idx)] = ci
-        e[ir_idx] = ei
-        irrep_tag[ir_idx] = str(ir)
-        angular_tag = None
-    # process max contributing ao
-    from scipy.linalg import sqrtm
-    s_sqrtm = sqrtm(s)
-    c_tilde = np.dot(s_sqrtm, c)
-    labels = np.array(mol.spinor_labels())
-    label_ang = np.array([re.search(r'[a-z]', label.split()[2]).group(0) for label in labels])
-    angular_tag = np.empty(nmo, dtype='U1')
-    for i in range(nmo):
-        ci = abs(c_tilde[:,i])**2
-        norm_ang = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-        angs = np.array(['s','p', 'd', 'f', 'g'])
-        for j, label in enumerate(angs):
-            norm_ang[j] = sum(ci[np.where(label_ang == label)])
-        angular_tag[i] = angs[np.argmax(norm_ang)]
-
-    sort_idx = np.argsort(e)
-    irrep_tag = irrep_tag[sort_idx]
-    angular_tag = angular_tag[sort_idx]
-    #print(irrep_tag)
-    #print(angular_tag)
-    return lib.tag_array(e[sort_idx],irrep_tag=irrep_tag),\
-           lib.tag_array(c[:,sort_idx], ang_tag=angular_tag)
-
-def get_occ_symm(mf, irrep, occup, irrep_mo=None, mo_energy=None, mo_coeff=None):
-    mol = mf.mol
-    mo_occ = np.zeros_like(mo_energy, dtype=complex)
-    ir_tag = irrep_mo
-    if ir_tag is None:
-        if mo_energy is None:
-            mo_energy = mf.mo_energy
-        ir_tag=mf.irrep_mo
-    if mo_coeff is None and mf.mo_coeff is None:
-        for ir in irrep:
-            ir_mo = np.where(ir_tag==ir)
-            if isinstance(occup[ir][0], int):
-                occupy = sum(occup[ir])
-            else:
-                occupy = occup[ir][0]
-            mo_occ[ir_mo[:occupy]] = 1.0+0.j
-            #mo_occ
-            return mo_occ
-    elif mo_coeff is None:
-        mo_coeff = mf.mo_coeff
-    angular_momentum = ['s', 'p', 'd', 'f']
-    n_ang = 4
-    '''
-    print(mo_coeff.ang_tag)
-    for ir in irrep:
-        ir_mo = np.where(ir_tag==ir)[0]
-        if not ir in occup:
+def _get_k_factored(mf, mol, dm, tol=1e-13):
+    '''K (spinor basis) of a Hermitian spinor density from D_sph = V w V^H: the positive and the
+    negative parts as two weighted orbital sets (eigenvalues below tol * max |w| dropped), each
+    reduced to its Kramers half when time-reversal symmetric; None when the rank is too high.'''
+    from socutils.scf import rik_2c
+    nao = mol.nao_nr()
+    dm_sph = spinor2sph(mol, dm)
+    dm_sph = (dm_sph + dm_sph.conj().T) * .5
+    w, v = scipy.linalg.eigh(dm_sph)
+    cut = tol * max(abs(w).max(), 1e-300)
+    pos, neg = w > cut, w < -cut
+    if pos.sum() + neg.sum() > FACTOR_DM_RANK * 2 * nao:
+        return None
+    orbs, krs, signs = [], [], []
+    for sel, sgn in ((pos, 1.), (neg, -1.)):
+        if not sel.any():
             continue
-        occupy = occup[ir]
-        if isinstance(occup[ir], int):
-            mo_occ[ir_mo[:occupy]] = 1.0+0.j
-        else:
-            mo_occ[ir_mo[occupy[0]]] = 0.0+0.j
-        for i in range(1, min(len(occupy), n_ang+1)):
-            if occupy[i] == 0:
-                continue
-            else:
-                ang = angular_momentum[i-1]
-                indices = np.where(mo_coeff.ang_tag[ir_mo] == ang)[0]
-                #print(ir_mo)
-                print(ir, ang, ir_mo[indices[:occupy[i]]])
-                if len(indices) < occupy[i]:
-                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
-                else:
-                    mo_occ[ir_mo[indices[:occupy[i]]]] = 1.0+0.j
-                    #mo_occ[ir_mo[[indices[:occupy[i]]]]] = 1.0+0.j
-    occupied = np.where(mo_occ == 1.0+0.j)[0]
-    count = [0,0,0,0]
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 's':
-            count[0]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'p':
-            count[1]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'd':
-            count[2]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'f':
-            count[3]+=1
-    print(ir_tag[:92])
-    print(mo_coeff.ang_tag[:92])
-    print(occupied)
-    print(len(occupied))
-    print(ir_tag[occupied])
-    print(mo_coeff.ang_tag[occupied])
-    print(count)
-    '''
-    for ir in irrep:
-        ir_mo = np.where(ir_tag==ir)[0]
-        if not ir in occup:
-            continue
-        occupy = occup[ir]
-        if isinstance(occup[ir][0], int):
-            mo_occ[ir_mo[:occupy[0]]] = 1.0+0.j
-        else:
-            mo_occ[ir_mo[occupy[0]]] = 1.0+0.j
-        for i in range(1, min(len(occupy), n_ang+1)):
-            if occupy[i] == 0:
-                continue
-            else:
-                ang = angular_momentum[i-1]
-                indices = np.where(mo_coeff.ang_tag[ir_mo[occupy[0]:]] == ang)[0]
-                print(occupy[0])
-                print(mo_coeff.ang_tag[ir_mo[occupy[0]:]])
-                print(indices)
-                if len(indices) < occupy[i]:
-                    raise ValueError(f'Not enough mo with largest contribution from {ang} found')
-                else:
-                    print(ir_mo[occupy[0]:][indices[:occupy[i]]])
-                    mo_occ[ir_mo[occupy[0]:][indices[:occupy[i]]]] = 1.0+0.j
-    occupied = np.where(mo_occ == 1.0+0.j)[0]
-    count = [0,0,0,0]
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 's':
-            count[0]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'p':
-            count[1]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'd':
-            count[2]+=1
-    for idx, irrep, ene, ang in zip(occupied, ir_tag[occupied], mo_energy[occupied], mo_coeff.ang_tag[occupied]):
-        if ang == 'f':
-            count[3]+=1
-    nelec = mol.nelectron
-    print(ir_tag[:nelec+10])
-    print(mo_coeff.ang_tag[:nelec+10])
-    print(occupied)
-    print(len(occupied))
-    print(ir_tag[occupied])
-    print(mo_coeff.ang_tag[occupied])
-    print(count)
-    return mo_occ
+        c = v[:, sel] * numpy.sqrt(abs(w[sel]))
+        u = rik_2c.kramers_half(c, nao) if getattr(mf, 'kramers_k', True) else False
+        orbs.append(c if u is False else u)
+        krs.append(u is not False)
+        signs.append(sgn)
+    logger.debug(mf, 'DF-K of an untagged density: rank %d + %d, Kramers %s', pos.sum(), neg.sum(), krs)
+    if not orbs:
+        return numpy.zeros_like(dm, dtype=complex)
+    _, vks = rik_2c.get_jk(mf.with_df, orbs, [], kramers=krs, signs=signs, max_memory=mf.max_memory,
+                           verbose=mf.verbose)
+    return sph2spinor(mol, sum(vks))
+
+
+def _kramers_unbarred(C, nao, tol=1e-8):
+    '''Unbarred columns of an occupied set (sph GHF basis, (2 nao, nocc), columns
+    weighted by sqrt(occupation)) made of Kramers pairs (u_k, b_k) in columns
+    (2k, 2k+1) with b_k = Theta u_k up to a phase, Theta (a, b) = (-b*, a*),
+    and equal occupations; False when the set is not paired that way.'''
+    nocc = C.shape[1]
+    if nocc == 0 or nocc % 2:
+        return False
+    u, b = C[:, 0::2], C[:, 1::2]
+    tu = numpy.vstack((-u[nao:].conj(), u[:nao].conj()))
+    nu = numpy.einsum('pk,pk->k', u.conj(), u).real
+    nb = numpy.einsum('pk,pk->k', b.conj(), b).real
+    ov = abs(numpy.einsum('pk,pk->k', b.conj(), tu))
+    if (abs(nu - nb) > tol * nu.max()).any() or (abs(ov - numpy.sqrt(nu * nb)) > tol * nu.max()).any():
+        return False
+    return numpy.ascontiguousarray(u)
 
 
 def spinor2sph(mol, spinor):
@@ -529,24 +448,28 @@ def get_hcore(mol, with_soc=None):
             h += -1.j*mat_spinor
     return h
 
-# attempt to restructure the spinor hf code structure
-# spinor hf should be parent of x2c hf using j-adapted spinor
-class SpinorSCF(hf.SCF):
-    '''Nonrelativistic SCF under j-adapted spinor basis'''
+class SCF(SpinorPropertyMixin, hf.SCF):
+    '''SCF in the j-adapted spinor basis (two-component).
 
-    _keys = {'with_soc', 'with_x2c'}
+    Without a relativistic Hamiltonian this is the nonrelativistic spinor SCF;
+    .x2camf() / .x2cmp() attach the X2C spin-orbit Hamiltonian (with_x2c).
+    The base class is Kramers unrestricted; :class:`RHF` is the
+    Kramers-restricted variant.
+    '''
+
+    _keys = {'with_soc', 'with_x2c', 'rijcosx', 'rijcosx_auxbasis'}
+    rijcosx = None              # RIJ / COSX J, K (spinor_jk.mode): None -> spinor_jk.RIJCOSX
+    rijcosx_auxbasis = None     # the RIJ auxiliary basis: None -> spinor_jk.AUXBASIS (AutoAux)
 
     def __init__(self, mol):
         hf.SCF.__init__(self, mol)
         self.with_soc=False
         self.with_x2c=None
-        self.so_contr=None
-        self.new_energy_algo=False
 
     def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
         return density_fit(self, auxbasis, with_df, only_dfj)
 
-    def cholesky(self, tau=1e-4, sigma=1e-2, method='threeloop',
+    def cholesky(self, tau=1e-4, sigma=1e-2, method='twostep',
                  cderi=None, cderi_to_save=None, with_df=None, only_dfj=False):
         from socutils.cd.cd import cholesky
         return cholesky(self, tau=tau, sigma=sigma, method=method,
@@ -574,9 +497,9 @@ class SpinorSCF(hf.SCF):
         analogue of PySCF's ``mf.x2c()``.  The SOC enters through
         ``self.with_x2c`` and is applied in :meth:`get_hcore`; the
         Kramers-restriction of the solve is a property of the driver (use
-        :class:`KRHF` for a Kramers-restricted run).
+        :class:`RHF` for a Kramers-restricted run).
 
-        >>> mf = KRHF(mol).x2camf()              # Gaunt + Breit
+        >>> mf = RHF(mol).x2camf()              # Gaunt + Breit
         >>> mf.kernel()
         '''
         return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
@@ -588,7 +511,7 @@ class SpinorSCF(hf.SCF):
         return it.  Same usage as :meth:`x2camf`, with the molecular-mean-field
         flavor.
 
-        >>> mf = KRHF(mol).x2cmp()
+        >>> mf = RHF(mol).x2cmp()
         >>> mf.kernel()
         '''
         return self._attach_x2cmp(flavor, with_gaunt, with_breit, with_pcc, with_aoc)
@@ -609,8 +532,35 @@ class SpinorSCF(hf.SCF):
         from socutils.tdscf import gks
         return gks.TDA(self)
 
+    def prop_int1e(self, op, x_response=True, origin=None):
+        '''One-electron property integrals in the picture this reference
+        lives in: bare spinor integrals for a nonrelativistic spinor mean
+        field (exact there), picture-change transformed for an X2C one
+        (``self.with_x2c``).  Correlated/excited-state methods should take
+        their property operators from here, never from a bare ``mol.intor``.
+
+        See :mod:`socutils.prop.int1e` for the operator specs and for the
+        ``x_response`` semantics: True (default) gives the energy-derivative
+        operator dh_X2C/dlambda (EFG/HFC-style kernels); False gives the
+        plain picture-change operator [U+ O U]_++, the right object for
+        expectation values of fixed external operators and for transition
+        moments.'''
+        from socutils.prop.int1e import prop_int1e
+        return prop_int1e(self, op, x_response=x_response, origin=origin)
+
     def eig(self, h, s=None, *args, **kwargs):
         return hf.SCF.eig(self, h, s)
+
+    def scf(self, dm0=None, **kwargs):
+        '''hf.SCF.scf; with the RIJ / COSX fast path (self.rijcosx, spinor_jk.RIJCOSX) the COSX exchange
+        energy is recomputed on the final grid afterwards (spinor_jk.finalize)'''
+        from socutils.scf import spinor_jk
+        spinor_jk.reset(self)
+        hf.SCF.scf(self, dm0, **kwargs)
+        if spinor_jk.mode(self):
+            spinor_jk.finalize(self)
+        return self.e_tot
+    kernel = lib.alias(scf, alias_name='kernel')
 
     def build(self, mol=None):
         if self.verbose >= logger.WARN:
@@ -651,25 +601,6 @@ class SpinorSCF(hf.SCF):
             hcore = reduce(numpy.dot, (mol.so_contr.T, hcore, mol.so_contr))
         return hcore
 
-    def energy_tot(self, dm=None, h1e=None, vhf=None):
-        if dm is None:
-            dm=self.make_rdm1()
-        if h1e is None:
-            h1e = self.get_hcore()
-        if vhf is None:
-            vhf = self.get_veff()
-        print('new_energy_algo', self.new_energy_algo, hasattr(self.with_x2c, 'soc_matrix'))
-        #if self.with_x2c is not None and hasattr(self.with_x2c, 'soc_matrix'):
-        #    energy_new = hf.energy_tot(self, dm, h1e - self.with_x2c.soc_matrix, vhf+self.with_x2c.soc_matrix)
-        #    energy_old = hf.energy_tot(self, dm, h1e, vhf)
-        #    print(f'Energy scheme 1 {energy_new:20.12g}, {energy_old:20.12g}')
-        #    if self.new_energy_algo:
-        #        return energy_new
-        #    else:
-        #        return energy_old
-        #else:
-        return hf.energy_tot(self, dm, h1e, vhf)
-
     def get_ovlp(self, mol=None):
         if mol is None: mol = self.mol
         ovlp = mol.intor_symmetric('int1e_ovlp_spinor')
@@ -703,9 +634,17 @@ class SpinorSCF(hf.SCF):
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
         t0 = (logger.process_clock(), logger.perf_counter())
+        from socutils.scf import spinor_jk
+        dm_sph = spinor2sph(mol, dm)
+        if omega is None and spinor_jk.ENABLE and spinor_jk.available(mol):
+            # real scalar-AO builds through md_j / jk_multi (spinor_jk)
+            j_sph, k_sph = spinor_jk.get_jk_ghf(self, mol, dm_sph, hermi, with_j, with_k)
+            j_spinor = None if j_sph is None else sph2spinor(mol, j_sph)
+            k_spinor = None if k_sph is None else sph2spinor(mol, k_sph)
+            logger.timer(self, 'vj and vk', *t0)
+            return j_spinor, k_spinor
         if self.direct_scf and self.opt is None:
             self.opt = self.init_direct_scf(mol)
-        dm_sph = spinor2sph(mol, dm)
         j_sph, k_sph = ghf.GHF.get_jk(self, mol, dm_sph)
         j_spinor = sph2spinor(mol, j_sph)
         k_spinor = sph2spinor(mol, k_sph)
@@ -766,102 +705,38 @@ class SpinorSCF(hf.SCF):
         return spin_square_ghf(mo_coeff_ghf, s_ghf)
 
     def nuc_grad_method(self):
-        raise NotImplementedError
+        '''Nuclear gradient through the equivalent GHF / GKS object
+        (socutils.scf.spinor_ghf).'''
+        from socutils.scf import spinor_ghf
+        return spinor_ghf._gradients(self)
+    Gradients = nuc_grad_method
+
+    def Hessian(self):
+        '''Nuclear Hessian through the equivalent GHF / GKS object
+        (socutils.scf.spinor_ghf, socutils.hessian).'''
+        from socutils.scf import spinor_ghf
+        return spinor_ghf._hessian(self)
 
 
-class SymmSpinorSCF(SpinorSCF):
-    def __init__(self, mol, symmetry=None, occup=None):
-        SpinorSCF.__init__(self, mol)
-        self.symmetry = symmetry
-        if symmetry in ['linear', 'sph']:
-            self.irrep_ao = symmetry_label(mol, symmetry)
-        else:
-            raise NotImplementedError
+class UHF(SCF):
+    '''Kramers-unrestricted spinor SCF.'''
 
-        self.occupation = occup
-        print('occup')
-        print(self.occupation)
+    def to_ks(self, xc='HF'):
+        '''The spinor Kohn-Sham object of the same flavor (same with_x2c).'''
+        from socutils.dft import dft
+        mf = self.view(dft.UKS)
+        mf.xc = xc
+        mf.converged = False
+        return mf
 
-    def eig(self, h, s=None, *args, mo=None, **kwargs):
-        # AO basis generalized eigenproblem (existing path)
-        if s is not None:
-            e, c = eig(self, h, s, irrep=self.irrep_ao)
-            self.irrep_mo = e.irrep_tag
-            return e, c
-        # MO subspace per-irrep diagonalization
-        if mo is not None:
-            labels = self.label_mo(mo)
-            return self._eig_per_irrep(h, labels)
-        # No symmetry info — plain diagonalization
-        return self._eigh(h, s)
 
-    def _eigh(self, h, s):
-        return scipy.linalg.eigh(h, s)
+class RHF(SCF):
+    '''Kramers-restricted spinor SCF (quaternion eigensolver zquatev).'''
 
-    def label_mo(self, mo):
-        """Assign an irrep label to each column of `mo` by max AO irrep
-        contribution.  Stateless — call on demand.
-
-        mo : (nao_2c, k) ndarray
-        Returns: length-k array of irrep tags (str).
-        """
-        s = self.get_ovlp()
-        from scipy.linalg import sqrtm
-        s_sqrtm = sqrtm(s)
-        c_tilde = s_sqrtm @ mo
-        weight2 = (c_tilde.conj() * c_tilde).real
-        tags = list(self.irrep_ao.keys())
-        norms = numpy.zeros((len(tags), mo.shape[1]))
-        for it, tag in enumerate(tags):
-            ao_idx = self.irrep_ao[tag]
-            norms[it] = weight2[ao_idx].sum(axis=0)
-        best = numpy.argmax(norms, axis=0)
-        total = norms.sum(axis=0)
-        purity = norms[best, numpy.arange(mo.shape[1])] / numpy.where(total > 0, total, 1.0)
-        if (purity < 0.9).any():
-            logger.warn(self,
-                'label_mo: some MOs have low irrep purity (min=%.3f), '
-                'symmetry may be broken', purity.min())
-        return numpy.array([tags[b] for b in best])
-
-    def _eig_per_irrep(self, h, labels):
-        n = h.shape[0]
-        e = numpy.zeros(n)
-        c = numpy.zeros((n, n), dtype=h.dtype)
-        irrep_tag = numpy.empty(n, dtype='U10')
-        labels = numpy.asarray(labels)
-        # cross-irrep coupling check: build mask of same-irrep entries, measure
-        # Frobenius norm of the complement relative to the whole matrix
-        same = labels[:, None] == labels[None, :]
-        cross_norm = numpy.linalg.norm(numpy.where(same, 0., h))
-        total_norm = numpy.linalg.norm(h)
-        if total_norm > 0 and cross_norm / total_norm > 1e-6:
-            logger.warn(self,
-                '_eig_per_irrep: cross-irrep coupling norm=%.3e (relative=%.3e) '
-                'is non-negligible; off-block couplings will be ignored',
-                cross_norm, cross_norm / total_norm)
-        for ir in numpy.unique(labels):
-            idx = numpy.where(labels == ir)[0]
-            hi = h[numpy.ix_(idx, idx)]
-            ei, ci = scipy.linalg.eigh(hi)
-            e[idx] = ei
-            c[numpy.ix_(idx, idx)] = ci
-            irrep_tag[idx] = str(ir)
-        sort_idx = numpy.argsort(e)
-        return (lib.tag_array(e[sort_idx], irrep_tag=irrep_tag[sort_idx]),
-                c[:, sort_idx])
-
-    def get_occ(self, mo_energy=None, mo_coeff=None):
-        if self.occupation is None or mo_energy is None:
-            return SpinorSCF.get_occ(self, mo_energy, mo_coeff)
-        else:
-            return get_occ_symm(self, self.irrep_ao, self.occupation, mo_energy=mo_energy, mo_coeff=mo_coeff)
-        
-class KRHF(SpinorSCF):
     def __init__(self, mol):
         super().__init__(mol)
         if zquatev is None:
-            raise RuntimeError('zquatev library is required to perform Kramers-restricted JHF')
+            raise RuntimeError('zquatev library is required to perform Kramers-restricted spinor SCF')
     def _eigh(self, h, s):
         return zquatev.solve_KR_FCSCE(self.mol, h, s)
     def eig(self, h, s=None, *args, **kwargs):
@@ -875,7 +750,10 @@ class KRHF(SpinorSCF):
             idx = numpy.hstack([numpy.arange(0, n, 2), numpy.arange(1, n, 2)])
             h_kr = h[numpy.ix_(idx, idx)]
             try:
-                zquatev.check_kramers_structure(h_kr, thresh=1e-6)
+                # the check compares Frobenius norms, which grow ~ eps*n for
+                # per-element noise eps: scale the threshold with the block
+                # dimension or large Kramers-clean blocks get rejected
+                zquatev.check_kramers_structure(h_kr, thresh=1e-6 * max(1, n // 2))
             except AssertionError:
                 logger.warn(self, 'Kramers structure check failed in eig, falling back to scipy.linalg.eigh')
                 return scipy.linalg.eigh(h)
@@ -886,17 +764,17 @@ class KRHF(SpinorSCF):
             v[idx] = v_kr
             return e, v
     def to_ks(self, xc='HF'):
-       from pyscf.x2c import dft
-       mf = self.view(dft.RKS)
-       mf.converged = False
-       return mf
+        '''The Kramers-restricted spinor Kohn-Sham object (same with_x2c).'''
+        from socutils.dft import dft
+        mf = self.view(dft.RKS)
+        mf.xc = xc
+        mf.converged = False
+        return mf
 
-from pyscf.scf import _response_functions
-SpinorSCF.gen_response = _response_functions._gen_ghf_response
 
-JHF = SpinorSCF
-SCF = SpinorSCF
-SpinorSymmSCF = SymmSCF = SymmJHF = SymmSpinorSCF
+# old names
+SpinorSCF = JHF = SCF
+KRHF = RHF
 
 
 if __name__ == '__main__':

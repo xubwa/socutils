@@ -8,11 +8,17 @@
 # flat into this directory (socutils/lib/) and loaded from there by
 # ``socutils.lib.load_library``:
 #
-#   x2camf  ->  lib/libx2camf_c.so    (import x2camf, the SOC integral backend)
 #   ccsdt   ->  lib/libccsdt_clib.so  (socutils.cc CCSDT kernels)
-#   zquatev ->  lib/libzquatev.so     (Kramers-restricted spinor SCF)
 #   ao2mo   ->  lib/libnrr_opt.so     (socutils.lib.ao2mo.nrr_fast spinor AO2MO)
+#   vhf     ->  lib/libsocvhf.so      (socutils.somf.x2cmp multi-centre J/K prescreen)
+#   dft     ->  lib/libsocdft.so      (socutils.dft.noncollinear multi-collinear XC kernel)
+#   pbcdf   ->  lib/libsocpbcdf.so    (socutils.pbc.rsdf screened SR integrals over images)
+#   qdhf    ->  lib/libqdhf.so        (socutils.qdhf, quad precision HF; needs libquadmath)
 #   zgasci  ->  lib/libzgasci.so      (socutils.hci.gasci FCI / GAS-CI kernels)
+#
+# x2camf (the C implementation, import x2camf) and zquatev (Kramers-restricted
+# spinor SCF) are separate repositories, built with ExternalProject into
+# lib/deps/lib (libx2camf_c.so, libzquatev.so); see the end of this file.
 #
 # zshci is the exception: a program, run by socutils.hci.shci, whose
 # executables go to lib/zshci/bin/.
@@ -33,7 +39,14 @@ if(CMAKE_COMPILER_IS_GNUCC)
     set(CMAKE_SHARED_LINKER_FLAGS "-Wl,--no-as-needed ${CMAKE_SHARED_LINKER_FLAGS}")
   endif()
 endif()
-set(CMAKE_C_FLAGS "-Wall ${CMAKE_C_FLAGS}")
+# -fno-math-errno: sqrt / exp without the errno branch, which keeps GCC from
+# vectorising the `omp simd` loops calling them (the vertical recursions of the
+# vhf/ integral kernels); results unchanged, J + K 3 - 8 % faster.
+# (-fno-trapping-math vectorises the F_m table loops too, with gathers: no
+# faster on Cascade Lake, same-node A/B.)
+# implicit function declarations are errors: a call to a function compiled out by an #ifdef (e.g. an AVX-512
+# only kernel) otherwise links into a .so with an undefined symbol that fails to load at runtime
+set(CMAKE_C_FLAGS "-Wall -fno-math-errno -Werror=implicit-function-declaration ${CMAKE_C_FLAGS}")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -funroll-loops")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -funroll-loops -g")
 set(CMAKE_C_STANDARD 99)
@@ -44,6 +57,15 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
+
+# Target instruction set, e.g. -DSOCUTILS_MARCH=cascadelake (AVX-512; runs on
+# that and newer Intel CPUs, so a build on any Rockfish CPU node runs on all of
+# them) or native.  Empty (default): the compiler's generic target.
+set(SOCUTILS_MARCH "" CACHE STRING "-march= of the C / C++ libraries (empty: generic)")
+if(SOCUTILS_MARCH)
+  add_compile_options(-march=${SOCUTILS_MARCH})
+  message(STATUS "socutils: -march=${SOCUTILS_MARCH}")
+endif()
 
 # Architecture-specific overrides (optional), as in pyscf.
 if(EXISTS "${PROJECT_SOURCE_DIR}/cmake.arch.inc")
@@ -95,9 +117,73 @@ else()
   set(CMAKE_INSTALL_RPATH "\$ORIGIN:\$ORIGIN/deps/lib")
 endif()
 
-add_subdirectory(x2camf)
 add_subdirectory(ccsdt)
-add_subdirectory(zquatev)
+add_subdirectory(zccsd)
 add_subdirectory(ao2mo)
+add_subdirectory(vhf)
+add_subdirectory(dft)
+add_subdirectory(pbcdf)
+add_subdirectory(thc)
 add_subdirectory(zgasci)
 add_subdirectory(zshci)
+
+# --- external libraries: x2camf (C implementation) and zquatev ----------------
+# Built from their own repositories with ExternalProject, as pyscf/lib does for
+# libcint and libxc, with the BLAS/LAPACK found above, and installed into
+# lib/deps/lib.  X2CAMF_SOURCE_DIR / ZQUATEV_SOURCE_DIR use a local checkout
+# instead of cloning.
+include(ExternalProject)
+string(REPLACE ";" "|" _blas_pipe "${BLAS_LIBRARIES}")
+string(REPLACE ";" "|" _lapack_pipe "${LAPACK_LIBRARIES}")
+set(_ext_cmake_args
+  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_C_COMPILER:STRING=${CMAKE_C_COMPILER}
+  -DCMAKE_CXX_COMPILER:STRING=${CMAKE_CXX_COMPILER}
+  "-DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS}"
+  -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
+  -DCMAKE_INSTALL_LIBDIR:PATH=lib
+  -DBLAS_LIBRARIES=${_blas_pipe})
+if(LAPACK_LIBRARIES)
+  list(APPEND _ext_cmake_args -DLAPACK_LIBRARIES=${_lapack_pipe})
+endif()
+
+option(BUILD_X2CAMF "Download and build the x2camf C library" ON)
+set(X2CAMF_GIT "https://github.com/xubwa/x2camf-c.git" CACHE STRING "x2camf (C) repository")
+set(X2CAMF_VERSION "v1.0.0" CACHE STRING "x2camf (C) git tag or commit")
+set(X2CAMF_SOURCE_DIR "" CACHE PATH "local x2camf (C) source tree instead of cloning")
+option(BUILD_ZQUATEV "Download and build zquatev" ON)
+# sunqm/zquatev master after PR #2 (BLAS_LIBRARIES, install, zdotc without CBLAS)
+set(ZQUATEV_GIT "https://github.com/sunqm/zquatev.git" CACHE STRING "zquatev repository")
+set(ZQUATEV_VERSION "4b397dd9a2347f654fb369bbb75938e8713afe08" CACHE STRING "zquatev git tag or commit")
+set(ZQUATEV_SOURCE_DIR "" CACHE PATH "local zquatev source tree instead of cloning")
+
+foreach(_ext X2CAMF ZQUATEV)
+  if(BUILD_${_ext})
+    string(TOLOWER ${_ext} _name)
+    if(${_ext}_SOURCE_DIR)
+      set(_src SOURCE_DIR ${${_ext}_SOURCE_DIR})
+    else()
+      set(_src GIT_REPOSITORY ${${_ext}_GIT} GIT_TAG ${${_ext}_VERSION})
+    endif()
+    ExternalProject_Add(${_name}_ext
+      ${_src}
+      PREFIX ${PROJECT_BINARY_DIR}/deps
+      INSTALL_DIR ${PROJECT_SOURCE_DIR}/deps
+      LIST_SEPARATOR |
+      CMAKE_ARGS ${_ext_cmake_args})
+  endif()
+endforeach()
+
+option(ENABLE_QDHF "Quadruple precision HF kernels (requires libquadmath)" ON)
+if(ENABLE_QDHF)
+  include(CheckCSourceCompiles)
+  set(CMAKE_REQUIRED_LIBRARIES quadmath)
+  check_c_source_compiles("#include <quadmath.h>
+int main() { __float128 x = sqrtq(2.Q); return x > 1 ? 0 : 1; }" HAVE_QUADMATH)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  if(HAVE_QUADMATH)
+    add_subdirectory(qdhf)
+  else()
+    message(WARNING "libquadmath not found; socutils.qdhf is not built")
+  endif()
+endif()

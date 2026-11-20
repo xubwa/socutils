@@ -185,9 +185,7 @@ def get_hcore(x2cobj, mol, B_field = [0.0, 0.0, 0.0], sph = False):
     tx = reduce(np.dot, (h4c[:n2c, n2c:], x))
     l = h4c[:n2c, :n2c] + tx + tx.T.conj() + reduce(np.dot, (x.T.conj(), h4c[n2c:, n2c:], x))
     from pyscf.x2c import x2c
-    sa = x2c._invsqrt(m4c[:n2c, :n2c])
-    sb = x2c._invsqrt(reduce(np.dot, (sa, st, sa)))
-    r = reduce(np.dot, (sa, sb, sa, m4c[:n2c, :n2c]))
+    r = x2c._get_r(m4c[:n2c, :n2c], st)
     hcore = reduce(np.dot, (r.T.conj(), l, r))
     hcore = reduce(np.dot, (contr_coeff.T.conj(), hcore, contr_coeff))
     if sph:
@@ -232,14 +230,15 @@ N        0.00000000     0.00000000    -0.89955523
     mol.spin = 1
     mol.unit = 'bohr'
     mol.nucmod = 'g'
+    mol.symmetry = True
     mol.build()
-    irrep = {'1/2':[6], '-1/2':[5], '3/2':[1], '-3/2':[1]}
+    irrep = {'1/2': 6, '-1/2': 5, '3/2': 1, '-3/2': 1}
     def mfobj(B_field):
-        from socutils.scf import spinor_hf, x2camf_hf
-        mf = spinor_hf.SymmSpinorSCF(mol, symmetry="linear", occup = irrep)
+        from socutils.scf import double_group_symm
+        mf = double_group_symm.SymAdaptedUHF(mol)
+        mf.irrep_nelec = irrep
         mf.chkfile='chk.chk'
         mf.init_guess = 'chkfile'
-        mf.with_x2c = x2camf_hf.SpinorX2CAMFHelper(mol, with_gaunt=True, with_breit=True)
         from socutils.somf import eamf
         mf.with_x2c = eamf.SpinorEAMFX2CHelper(mol, eamf='eamf', with_gaunt=True, with_breit=True)
         mf.with_x2c.get_hcore(mol)

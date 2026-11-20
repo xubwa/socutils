@@ -1,0 +1,49 @@
+# socvhf: prescreen functions for pyscf's relativistic direct-SCF drivers that
+# skip the one-centre shell quartets (somf/x2cmp.py).  Like ao2mo/nrr_opt it
+# wraps functions of an already-installed pyscf (libcvhf) instead of standing
+# alone, so it locates that pyscf through the configuring Python interpreter.
+
+find_program(PYTHON_EXECUTABLE NAMES python3 python)
+if(NOT PYTHON_EXECUTABLE)
+  message(FATAL_ERROR "vhf/socvhf needs a Python interpreter (to locate pyscf)")
+endif()
+
+execute_process(
+  COMMAND ${PYTHON_EXECUTABLE} -c
+          "from pyscf import lib; import os; print(os.path.dirname(os.path.abspath(lib.__file__)))"
+  OUTPUT_VARIABLE PYSCF_LIB_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE _pyscf_lib_rc)
+if(NOT _pyscf_lib_rc EQUAL 0 OR NOT PYSCF_LIB_DIR)
+  message(FATAL_ERROR "vhf/socvhf: could not import pyscf via ${PYTHON_EXECUTABLE} "
+                       "(needed to link against its libcvhf)")
+endif()
+
+find_library(PYSCF_CVHF_LIB NAMES cvhf PATHS ${PYSCF_LIB_DIR} NO_DEFAULT_PATH)
+if(NOT PYSCF_CVHF_LIB)
+  message(FATAL_ERROR "vhf/socvhf: could not find libcvhf under ${PYSCF_LIB_DIR}")
+endif()
+
+find_library(PYSCF_CGTO_LIB NAMES cgto PATHS ${PYSCF_LIB_DIR} NO_DEFAULT_PATH)
+find_library(PYSCF_CINT_LIB NAMES cint PATHS ${PYSCF_LIB_DIR}/deps/lib ${PYSCF_LIB_DIR} NO_DEFAULT_PATH)
+if(NOT PYSCF_CGTO_LIB OR NOT PYSCF_CINT_LIB)
+  message(FATAL_ERROR "vhf/socvhf: could not find libcgto / libcint under ${PYSCF_LIB_DIR}")
+endif()
+
+# hess_screen.c, hess2e.c: two-electron derivative contractions of the
+# Hessian (socutils.hessian.ghf)
+# grad_vrr_gen_*.c: the generated first-derivative kernels (gen_grad_vrr.py), several
+# translation units so that they compile in parallel
+file(GLOB SOCVHF_GRAD_GEN ${CMAKE_CURRENT_SOURCE_DIR}/grad_vrr_gen_*.c)
+file(GLOB SOCVHF_JKF_GEN ${CMAKE_CURRENT_SOURCE_DIR}/jk_vrr_f_*.c)
+# hess_vrr_gen_*.c: the generated second-derivative kernels (gen_hess_vrr.py)
+file(GLOB SOCVHF_HESS_GEN ${CMAKE_CURRENT_SOURCE_DIR}/hess_vrr_gen_*.c)
+add_library(socvhf SHARED mc_screen.c hess_screen.c hess2e.c hess2e_cart.c jk_multi.c onx.c jk_ssss.c jk_gen.c jk_bench.c
+            fock1.c ri_j_deriv.c ri_k_grad.c int3c_s2.c md_j.c rij_direct.c hgp.c rik2c.c ${SOCVHF_GRAD_GEN} ${SOCVHF_JKF_GEN} ${SOCVHF_HESS_GEN})
+target_include_directories(socvhf PRIVATE
+  ${PYSCF_LIB_DIR} ${PYSCF_LIB_DIR}/deps/include)
+target_link_libraries(socvhf PRIVATE ${PYSCF_CVHF_LIB} ${PYSCF_CGTO_LIB} ${PYSCF_CINT_LIB}
+                      ${BLAS_LIBRARIES} ${OPENMP_C_PROPERTIES} m)
+set_target_properties(socvhf PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
+  INSTALL_RPATH "$ORIGIN:${PYSCF_LIB_DIR}:${PYSCF_LIB_DIR}/deps/lib")

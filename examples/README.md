@@ -16,6 +16,10 @@ They use the canonical `.x2camf()` / `.x2cmp()` driver API.
 | `08-casci.py` | CASCI on a spinor reference |
 | `09-four_component.py` | four-component Dirac-Hartree-Fock |
 | `10-casscf.py` | CASSCF orbital optimization (DF reference, needs zquatev) |
+| `11-spinor_gw.py` | spinor G0W0 quasiparticle energies (`gw.SpinorGWAC`) |
+| `12-tddft_core_excitation.py` | core-excitation (XAS) spectra with spinor TDDFT |
+| `13-cis_mo_driven.py` | spinor CIS, MO-driven (`mf.TDA()` on HF) |
+| `14-avas.py` | AVAS automated active space selection (spinor) |
 
 The `fci/` subfolder has examples for the spinor CI module (`socutils.fci`):
 
