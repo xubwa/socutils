@@ -1,0 +1,19 @@
+nocc 12
+0 1 2 3 4 5 6 7 8 9 10 11
+end
+orbitals /home/xwang405/apps/zshci/test/data/o2_4c.fcidump
+nroots 1
+schedule
+0 1e-3
+2 2e-4
+4 5e-5
+6 2e-5
+end
+davidsonTol 1e-6
+dE 1e-7
+maxiter 12
+deterministic
+epsilon2 10
+prefix .
+outputlevel 0
+

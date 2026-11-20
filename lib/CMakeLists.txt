@@ -20,6 +20,9 @@
 # spinor SCF) are separate repositories, built with ExternalProject into
 # lib/deps/lib (libx2camf_c.so, libzquatev.so); see the end of this file.
 #
+# zshci is the exception: a program, run by socutils.hci.shci, whose
+# executables go to lib/zshci/bin/.
+#
 # The subdirectory CMakeLists.txt files are thin (just the target plus its
 # link/output), exactly as in pyscf/lib, so they slot into pyscf/lib unchanged
 # if contributed upstream.
@@ -122,6 +125,7 @@ add_subdirectory(dft)
 add_subdirectory(pbcdf)
 add_subdirectory(thc)
 add_subdirectory(zgasci)
+add_subdirectory(zshci)
 
 # --- external libraries: x2camf (C implementation) and zquatev ----------------
 # Built from their own repositories with ExternalProject, as pyscf/lib does for

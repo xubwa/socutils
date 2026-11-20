@@ -198,6 +198,33 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   and density-matrix conventions of `SHCI`/`zfci.FCISolver`. Details in
   `lib/zgasci/README.md`; test `hci/test/test_gasci.py`.
 
+- **`lib/zshci/` + `hci/shci.py`** — selected CI (heat-bath selection, Davidson,
+  deterministic / stochastic / semistochastic PT2, 1- and 2-RDMs, transition
+  1-RDM) for spinor Hamiltonians. Unlike its siblings in `lib/` it is a
+  **program**, not a ctypes library: `hci/shci.py` (`SHCI`, same solver
+  interface and RDM conventions as `fci.zfci.FCISolver`) writes an FCIDUMP and
+  `input.json`, runs `lib/zshci/bin/zshci`, and reads HDF5 back. `SHCI(mol,
+  backend='dice')` returns instead the earlier driver of the external Dice
+  binary, kept unchanged as `hci/dice.py`. The top-level CMake builds it
+  when HDF5, OpenMP and Eigen 3 are found (`-DEIGEN_ROOT=...`,
+  `-DHDF5_ROOT=...`) and skips it with a notice otherwise; `lib/zshci/Makefile`
+  builds the same programs alone. C++17, Google C++ style, own self-checks
+  (`bin/zshci_test <FCIDUMP>`); details in `lib/zshci/README.md`. Python test:
+  `hci/test/test_shci.py` (against `zfci`). The same program does
+  non-relativistic selected CI over spatial orbitals (`"orbitals": "spatial"`,
+  class `SpatialSHCI`, a drop-in `fcisolver` for PySCF's CASCI/CASSCF with
+  spin-traced RDMs; test `hci/test/test_spatial_shci.py` against `pyscf.fci`)
+  and, for an unrestricted reference, `UnrestrictedSHCI` (interface of
+  `pyscf.fci.direct_uhf`).
+
+- **`lib/zgasci/` + `hci/gasci.py`** — full / GAS / RAS CI over spinors
+  (and, as `SpatialGASCI`, over spatial orbitals with the pyscf
+  `direct_spin1` interface). Plain C99 + OpenMP kernels (`lib/libzgasci.so`,
+  ctypes) for the diagonal, sigma and the pair density; vectors and the
+  Davidson (`pyscf.lib.davidson1`) stay in Python. `GASCI` has the interface
+  and density-matrix conventions of `SHCI`/`zfci.FCISolver`. Details in
+  `lib/zgasci/README.md`; test `hci/test/test_gasci.py`.
+
 ## Environment variables
 
 - `SOCUTILS_X2CAMF` = `bundled` (default) | `auto` | `external` — whether the
@@ -205,5 +232,6 @@ two-electron corrections on) and only then require the `x2camf` integral backend
 - `X2CAMF_BACKEND` = `c` (default if built) | `cpp` — which x2camf backend runs.
 - `X2CAMF_CPP_LIBRARY` — path to upstream `libx2camf*.so` for `make compare` / cpp backend.
 - `SOCUTILS_ZQUATEV_LIBRARY` — explicit path to `libzquatev.so`.
+- `SOCUTILS_ZSHCI_EXE` — explicit path to the `zshci` executable used by `hci/shci.py`.
 - `SOCUTILS_SOCDFT_LIBRARY` — explicit path to `libsocdft.so`.
 - `SOCUTILS_ZGASCI_LIBRARY` — explicit path to `libzgasci.so`.

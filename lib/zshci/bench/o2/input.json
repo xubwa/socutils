@@ -1,0 +1,13 @@
+{
+  // O2, four-component, 12 electrons in 32 spinors; closed-shell block.
+  "mode": "select",
+  "integrals": "/home/xwang405/apps/zshci/test/data/o2_4c.fcidump",
+  "nroots": 1,
+  "prefix": ".",
+  "dets": [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]],
+  "select": {"schedule": [[0, 1e-3], [2, 2e-4], [4, 5e-5]], "max_iter": 10,
+             "energy_tol": 1e-7},
+  "davidson": {"tol": 1e-6},
+  "pt": {"method": "deterministic", "epsilon2": 1e-7, "num_batches": 4},
+  "output_level": 0
+}
