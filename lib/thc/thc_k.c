@@ -196,3 +196,47 @@ void SOCTHCsquare(double *a, size_t n)
                 a[k] *= a[k];
         }
 }
+
+/* Per-label aux FT from its separable parts, in the layout of SOCTHCft_post:
+ *   out[2i + r, c] = w[i] * (Re, Im)[r] ((-i)^lq[c] S[i, cs[c]] R[i, cr[c]])
+ * S (g, ns): real solid harmonics (with their constants), R (g, nr): radial factors of the contracted shells,
+ * lq[c] = l mod 4 of column c; out (2g, n) C order. */
+void SOCTHCft_label(double *out, const double *S, const double *R, const double *w, const int *cs, const int *cr,
+                    const int *lq, int g, int ns, int nr, int n)
+{
+        int i;
+#pragma omp parallel for schedule(static)
+        for (i = 0; i < g; i++) {
+                const double *s = S + (size_t)i * ns, *r = R + (size_t)i * nr;
+                double *ore = out + (size_t)(2 * i) * n, *oim = ore + n;
+                double wi = w[i];
+                int c;
+                for (c = 0; c < n; c++) {
+                        double v = wi * s[cs[c]] * r[cr[c]];
+                        switch (lq[c]) {
+                        case 0: ore[c] = v; oim[c] = 0.; break;
+                        case 1: ore[c] = 0.; oim[c] = -v; break;
+                        case 2: ore[c] = -v; oim[c] = 0.; break;
+                        default: ore[c] = 0.; oim[c] = v;
+                        }
+                }
+        }
+}
+
+/* out[b, 2i], out[b, 2i + 1] = (Re, Im) X[b, i] ph[i]: X complex with rows ldx complex numbers apart (a column
+ * slice of a C-order array), ph (g) complex, out (nb, 2g) */
+void SOCTHCphase_mul(double *out, const double *X, const double *ph, int nb, int g, size_t ldx)
+{
+        int b;
+#pragma omp parallel for schedule(static)
+        for (b = 0; b < nb; b++) {
+                const double *x = X + 2 * ((size_t)b * ldx);
+                double *o = out + (size_t)b * 2 * g;
+                int i;
+                for (i = 0; i < g; i++) {
+                        double xr = x[2 * i], xi = x[2 * i + 1], pr = ph[2 * i], pi = ph[2 * i + 1];
+                        o[2 * i] = xr * pr - xi * pi;
+                        o[2 * i + 1] = xr * pi + xi * pr;
+                }
+        }
+}
