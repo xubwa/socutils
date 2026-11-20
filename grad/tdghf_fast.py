@@ -409,8 +409,21 @@ def _zvector(td_grad, tds, mfs, fx, C, mo_energy, mo_occ, L, log):
             gc = tds._fxc_grids(g)
             if gc is tds._fxc_grids():
                 gc = None
+    def refine(Z, rounds=3):
+        # lib.krylov stops once a new Krylov vector has norm^2 < lindep (1e-13): ~3e-7 of the normalised
+        # right-hand side whatever tol is; the residual equation on the final operator below that
+        nl = numpy.linalg.norm(L * e_ai)
+        for it in range(rounds):
+            r = L - Z / e_ai - resp(fx, Z[None])[0]
+            rel = numpy.linalg.norm(r * e_ai) / nl
+            log.debug('Z-vector: relative residual %.2e', rel)
+            if rel <= ZVECTOR_TOL:
+                break
+            Z = Z + solve(fx, r, min(.5, ZVECTOR_TOL / rel))
+        return Z
+
     if lvl is None and gc is None:
-        return solve(fx, L, ZVECTOR_TOL)
+        return refine(solve(fx, L, ZVECTOR_TOL))
     ctol = ZVECTOR_TOL * getattr(tds, 'coarse_tol', 100.)
     fine = spinor_jk.RESPONSE_GRID
     import contextlib
@@ -424,11 +437,7 @@ def _zvector(td_grad, tds, mfs, fx, C, mo_energy, mo_occ, L, log):
         spinor_jk.RESPONSE_GRID = fine
     log.debug('Z-vector: coarse phase (COSX on GRIDX%s, f_xc on %s) to %.1e', lvl if lvl is not None else fine,
               '%d points' % gc.weights.size if gc is not None else 'the SCF grid', ctol)
-    r = L - Z / e_ai - resp(fx, Z[None])[0]
-    rel = numpy.linalg.norm(r * e_ai) / numpy.linalg.norm(L * e_ai)
-    if rel > ZVECTOR_TOL:
-        Z = Z + solve(fx, r, min(.5, ZVECTOR_TOL / rel))
-    return Z
+    return refine(Z)
 
 
 # ---------------------------------------------------------------- driver

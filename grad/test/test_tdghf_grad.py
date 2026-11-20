@@ -12,7 +12,7 @@ import socutils  # noqa: F401
 from pyscf import gto, tdscf
 from socutils.scf import ghf
 from socutils.dft import gks
-from socutils.grad import tdghf_grad
+from socutils.grad import tdghf_grad, tdghf_fast
 import socutils.hessian.gks  # noqa: F401
 
 H = 2e-3
@@ -51,6 +51,10 @@ def _fd(xc, dm0, ia, x):
         c[ia, x] += d
         w.append(_run(_mol(c), xc, dm0)[1].e[STATE - 1])
     return (-w[0] + 8 * w[1] - 8 * w[2] + w[3]) / (12 * H)
+
+
+# zvector vs cphf to 1e-9 / 1e-10: the Z-vector of the fast path solved that tightly
+tdghf_fast.ZVECTOR_TOL = 1e-11
 
 
 class KnownValues(unittest.TestCase):
