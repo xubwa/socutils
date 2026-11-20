@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 '''
 Fast TDA excited-state gradient (socutils.grad.tdghf_fast) against the GHF Z-vector path
-(tdghf_grad.grad_elec, Gradients.fast = False) and, for a RIJ + COSX spinor reference (where the GHF path
-differentiates exact J / K), against finite differences of the excitation energy.  H2Se/cc-pVDZ, X2CAMF.
+(tdghf_grad.grad_elec, Gradients.fast = False; the two Z-vector solvers' tolerances differ, ~1e-8) and,
+for a RIJ + COSX spinor reference (where the GHF path differentiates exact J / K), against finite
+differences of the excitation energy.  H2Se/cc-pVDZ, X2CAMF.
 
     python grad/test/test_tdghf_fast.py
 '''
@@ -62,15 +63,15 @@ def _grads(kind):
 class KnownValues(unittest.TestCase):
     def test_ghf_hf(self):
         gf, go = _grads('ghf')[1:]
-        self.assertAlmostEqual(abs(gf - go).max(), 0, 8)
+        self.assertAlmostEqual(abs(gf - go).max(), 0, 7)
 
     def test_gks_pbe0(self):
         gf, go = _grads('gks')[1:]
-        self.assertAlmostEqual(abs(gf - go).max(), 0, 8)
+        self.assertAlmostEqual(abs(gf - go).max(), 0, 7)
 
     def test_spinor_pbe0(self):
         gf, go = _grads('spinor')[1:]
-        self.assertAlmostEqual(abs(gf - go).max(), 0, 8)
+        self.assertAlmostEqual(abs(gf - go).max(), 0, 7)
 
     def test_spinor_rijcosx_fd(self):
         mf, td = _run('spinor_rijcosx', _mol())

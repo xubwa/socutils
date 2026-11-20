@@ -29,7 +29,8 @@ Grid response (td_grad.grid_response, 'auto' by default): the XC terms where the
 (socutils.grad.grid_response), COSX on request (td_grad.cosx_grid_response).
 
 grad_elec returns None (the caller keeps tdghf_grad.grad_elec) when a piece is not available: an XC grid
-response on a partition socutils.grad.grid_response lacks, range-separated or NLC functionals, density-fitted SCF, Cartesian basis, missing libraries.
+response on a partition socutils.grad.grid_response lacks, range-separated or NLC functionals, density-fitted
+SCF, Cartesian basis, missing libraries.
 '''
 
 import ctypes
@@ -334,6 +335,87 @@ def _hcore_grad(td_grad, mol, Wh):
     return de
 
 
+# ---------------------------------------------------------------- Z-vector
+ZVECTOR_TOL = 1e-7      # relative residual of the Z-vector equation
+# spinor COSX reference: first on the TDA's coarse operator (COSX on td.coarse_grid, f_xc on
+# td.coarse_fxc_grids) to td.coarse_tol x ZVECTOR_TOL, then the residual equation on the final operator
+ZVECTOR_COARSE = True
+ZVECTOR_MAX_CYCLE = 60
+
+
+def _zvector(td_grad, tds, mfs, fx, C, mo_energy, mo_occ, L, log):
+    """Z (nvir, nocc) of (e_a - e_i) Z + fx(Z)_vo = L: Krylov on (1 + D^-1 A') Z = D^-1 L in the real
+    stacking [Re, Im] (the response is real-linear), relative residual ZVECTOR_TOL; with a coarse phase
+    (ZVECTOR_COARSE, tds the spinor TDA of a COSX reference) first on the cheaper operator"""
+    from socutils.hessian import ghf as ghf_hess
+    from socutils.scf import spinor_jk
+    occ = mo_occ > 0
+    vir = ~occ
+    nocc, nvir, nmo = int(occ.sum()), int(vir.sum()), C.shape[1]
+    e_ai = 1. / (mo_energy[vir][:, None] - mo_energy[occ])
+
+    def to_real(x):
+        n = x.shape[0]
+        return numpy.hstack([x.real.reshape(n, -1), x.imag.reshape(n, -1)])
+
+    def to_cplx(r):
+        r = r.reshape(-1, 2, nvir * nocc)
+        return (r[:, 0] + 1j * r[:, 1]).reshape(-1, nvir, nocc)
+
+    def resp(f, x):
+        mo1 = numpy.zeros((x.shape[0], nmo, nocc), dtype=numpy.complex128)
+        mo1[:, vir] = x
+        return f(mo1).reshape(-1, nmo, nocc)[:, vir]
+
+    def solve(f, rhs, tol):
+        b = to_real((rhs * e_ai)[None])
+        s = numpy.linalg.norm(b)
+        if s == 0:
+            return numpy.zeros_like(rhs)
+        n = [0]
+
+        def aop(r):
+            x = to_cplx(r)
+            n[0] += x.shape[0]
+            return to_real(resp(f, x) * e_ai)
+        y = lib.krylov(aop, b / s, tol=tol, max_cycle=ZVECTOR_MAX_CYCLE, verbose=log)
+        log.debug('Z-vector: %d responses (tol %.1e)', n[0], tol)
+        return to_cplx(numpy.asarray(y).reshape(b.shape) * s)[0]
+
+    lvl = gc = None
+    if ZVECTOR_COARSE and tds is not None and spinor_jk.mode(mfs) in ('cosx', 'rijcosx'):
+        lvl = getattr(tds, 'coarse_grid', None)
+        if lvl == spinor_jk.RESPONSE_GRID:
+            lvl = None
+        g = getattr(tds, 'coarse_fxc_grids', None)
+        if isinstance(g, str) and g == 'auto':
+            g = 'cpscf' if lvl is not None else None
+        if g is not None and isinstance(mfs, hf.KohnShamDFT):
+            gc = tds._fxc_grids(g)
+            if gc is tds._fxc_grids():
+                gc = None
+    if lvl is None and gc is None:
+        return solve(fx, L, ZVECTOR_TOL)
+    ctol = ZVECTOR_TOL * getattr(tds, 'coarse_tol', 100.)
+    fine = spinor_jk.RESPONSE_GRID
+    import contextlib
+    try:
+        if lvl is not None:
+            spinor_jk.RESPONSE_GRID = lvl
+        with lib.temporary_env(mfs, grids=gc) if gc is not None else contextlib.nullcontext():
+            fx0 = ghf_hess.gen_vind(mfs, C, mo_occ)
+            Z = solve(fx0, L, ctol)
+    finally:
+        spinor_jk.RESPONSE_GRID = fine
+    log.debug('Z-vector: coarse phase (COSX on GRIDX%s, f_xc on %s) to %.1e', lvl if lvl is not None else fine,
+              '%d points' % gc.weights.size if gc is not None else 'the SCF grid', ctol)
+    r = L - Z / e_ai - resp(fx, Z[None])[0]
+    rel = numpy.linalg.norm(r * e_ai) / numpy.linalg.norm(L * e_ai)
+    if rel > ZVECTOR_TOL:
+        Z = Z + solve(fx, r, min(.5, ZVECTOR_TOL / rel))
+    return Z
+
+
 # ---------------------------------------------------------------- driver
 def _grid_response_mode(td_grad, mf):
     '''(xc, cosx) grid-response switches: td_grad.grid_response True / False both on / off; 'auto' the XC
@@ -454,10 +536,7 @@ def grad_elec(td_grad, z, atmlst=None, verbose=logger.INFO):
         L = Lam[oi[:, None], vi].conj().T - Lam[vi[:, None], oi]
 
         fx = ghf_hess.gen_vind(mfs, C, mo_occ)
-        h1 = numpy.zeros((1, nmo, oi.size), dtype=numpy.complex128)
-        h1[0, vi] = -L
-        Z = ghf_hess.cphf_solve(fx, mo_energy, mo_occ, h1, numpy.zeros_like(h1),
-                                max_cycle=50, tol=mf.conv_tol_cpscf, verbose=log)[0][0][vi]
+        Z = _zvector(td_grad, tds if U is not None else None, mfs, fx, C, mo_energy, mo_occ, L, log)
         t1 = log.timer('TDA gradient: Z-vector', *t1)
         N = Co.dot(Z.conj().T).dot(Cv.conj().T)
         GN = vresp0(_herm(N)[None])[0]
