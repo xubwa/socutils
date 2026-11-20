@@ -12,7 +12,7 @@ import socutils  # noqa: F401
 from pyscf import gto, tdscf
 from socutils.scf import ghf
 from socutils.dft import gks
-from socutils.grad import ecp_so_deriv, tdghf_grad
+from socutils.grad import ecp_so_deriv, tdghf_grad, tdghf_fast
 import socutils.grad.gks_grad  # noqa: F401
 import socutils.hessian.gks  # noqa: F401  (mf.Hessian, used by the Z-vector gradient)
 
@@ -49,6 +49,10 @@ def _fd(f, ia, x, h):
         c[ia, x] += d
         v.append(f(_mol(c)))
     return (-v[0] + 8 * v[1] - 8 * v[2] + v[3]) / (12 * h)
+
+
+# zvector vs cphf to 1e-9 / 1e-10: the Z-vector of the fast path solved that tightly
+tdghf_fast.ZVECTOR_TOL = 1e-11
 
 
 class KnownValues(unittest.TestCase):
