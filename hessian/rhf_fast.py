@@ -870,7 +870,7 @@ XCHE_LOCAL_MIN_NAO = 200   # below this every AO is significant on most sub-bloc
 
 
 def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, natm, non0tab,
-                            nf_shell, nsub, libdft, term1, diag, M9):
+                            nf_shell, nsub, libdft, term1, diag, M9, gr=None):
     '''one pyscf grid block of xc_hess_explicit (LDA / GGA / MGGA) sub-block by sub-block, each on the AOs the
     grid's non0tab flags on it: D phi_k, rho and the functional, R / the on-atom sums / the M operands
     (SOCDFTrks_xc_hess_elem), the R f R GEMM and the atom-pair GEMM over the local AOs only'''
@@ -905,7 +905,7 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
                 rho[1 + j] = 2 * numpy.einsum('ig,ig->g', aol[1 + j], dT[0])
         if mgga:
             rho[4] = .5 * sum(numpy.einsum('ig,ig->g', aol[1 + j], dT[1 + j]) for j in range(3))
-        vxc, fxc = ni.eval_xc_eff(xc_code, rho if gga else rho[0], 2, xctype=xctype)[1:3]
+        exc, vxc, fxc = ni.eval_xc_eff(xc_code, rho if gga else rho[0], 2, xctype=xctype)[:3]
         w = weight[s0:s1]
         wf = numpy.ascontiguousarray(w * fxc.reshape(nvar, nvar, gs))
         wv = numpy.ascontiguousarray(w * vxc.reshape(nvar, gs))
@@ -923,6 +923,10 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
             ctypes.c_long(nl * gs))
         R *= -2
         diag[:, :, atoms] += dg
+        if gr is not None:
+            # the grid-response corrections of the sub-block (socutils.hessian.rks_grid_response.HessGR)
+            gr.sub(s0, s1, aol, dl, dT, rho, exc, vxc.reshape(nvar, gs), fxc.reshape(nvar, nvar, gs), w, R, atoms,
+                   idx, atom_of)
         wR = numpy.empty((3 * na, nvar, gs))
         libdft.SOCDFTfxc_contract_R(wR.ctypes, wf.ctypes, R.ctypes, ctypes.c_int(na), ctypes.c_int(nvar),
                                     ctypes.c_int(gs), ctypes.c_double(1.), ctypes.c_int(0))
@@ -960,7 +964,7 @@ def _xc_hess_explicit_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0,
                                     ctypes.c_int(nao))
 
 
-def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
+def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000, grid_response=False):
     '''Fixed-grid XC part of the explicit RKS Hessian (what pyscf builds from
     _get_vxc_diag and _get_vxc_deriv2), contracted with D on the grid:
 
@@ -1009,12 +1013,18 @@ def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
     p1 = 0
     local = (XCHE_LOCAL and libdft is not None and non0tab is not None
              and nao >= XCHE_LOCAL_MIN_NAO)
+    gr = None
+    if grid_response and local:
+        from socutils.hessian import rks_grid_response
+        gr = rks_grid_response.HessGR(hessobj, grids, xctype)
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, max_memory):
         ngrid = weight.size
         p0, p1 = p1, p1 + ngrid
         if local:
+            if gr is not None:
+                gr.block(p0, ngrid)
             _xc_hess_explicit_local(ni, mf.xc, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, natm, non0tab,
-                                    nf_shell, nsub, libdft, term1, diag, M9)
+                                    nf_shell, nsub, libdft, term1, diag, M9, gr)
             continue
         nd_ = 4 if gga else 1
         if libdft is not None:
@@ -1151,6 +1161,12 @@ def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
             de2[:, :, x, y] += S.T.dot(M[x, y] * dm0).dot(S)
     for ia in range(natm):
         de2[ia, ia] += diag[:, :, ia] + numpy.triu(diag[:, :, ia], 1).T
+    if grid_response:
+        if gr is not None:
+            de2 += gr.finish()
+        else:
+            from socutils.hessian import rks_grid_response
+            de2 += rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, with_fock=False, grids=grids)[0]
     return de2
 
 
@@ -1230,10 +1246,7 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     de2 += ej - hyb * ek
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     t1 = log.timer_debug1('RKS partial hessian, 1e + 2e', *time0)
-    de2 += xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory)
-    if _strict_grid(hessobj):
-        from socutils.hessian import rks_grid_response
-        de2 += rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, with_fock=False)[0]
+    de2 += xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory, grid_response=_strict_grid(hessobj))
     log.timer_debug1('RKS partial hessian, XC', *t1)
     log.timer('RKS partial hessian', *time0)
     return de2
@@ -1849,7 +1862,7 @@ XCD1_OCC_LOCAL = True   # xc_deriv1_batched(occ=True): D phi, rho, the functiona
 
 
 def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, non0tab, nf_shell,
-                         nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local):
+                         nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local, gr=None):
     '''one pyscf grid block of xc_deriv1_batched(occ=True), sub-block by sub-block on the AOs the grid's
     non0tab flags on it and their atoms: D phi_k, rho and the functional, the vxc term v_ip, d_A rho
     (SOCDFTrks_dR_rho), f_xc d_A rho and (V + V^T) C_occ (SOCDFTxcd1_occ); vmat (3 natm, nao, nocc)'''
@@ -1937,6 +1950,10 @@ def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, at
             wv1[:, 4] *= .25                        # as pyscf: 1/2 in tau, V + V^T
         rows = numpy.asarray((3 * atoms[:, None] + numpy.arange(3)).ravel(), dtype=numpy.int32)
         cl = numpy.ascontiguousarray(mocc[idx])
+        if gr is not None:
+            # the weight and owner potentials of the grid response on the same pass (rks_grid_response.Fock1GR)
+            rows, wv1 = gr.rows(s0, s1, atoms, wv1, R, vxc.reshape(nvar, gs), wf)
+            gr.owner_terms(s0, s1, vmat, idx, Lv, Rv, cl)
         psi = numpy.empty((nk, gs, nocc))
         for k in range(nk):
             lib.dot(aos[k].T, cl, c=psi[k])
@@ -1945,7 +1962,7 @@ def _xc_deriv1_occ_local(ni, xc_code, xctype, gga, nvar, ao, weight, p0, dm0, at
                               ctypes.c_int(nocc), ctypes.c_int(nao), dgemm, mkl_local)
 
 
-def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
+def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False, grid_response=False):
     """pyscf.hessian.rks._get_vxc_deriv1 (LDA / GGA; MGGA occ only): the first-order XC
     matrices d V_xc / dR_{A,x} of all atoms at fixed density.  The 3 natm
     first-order potentials f_xc d_A rho of a grid sub-block go through one
@@ -2014,12 +2031,18 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
     ws_buf = numpy.empty(nd * nvar * nsub)
     p1 = 0
     local_all = occ and XCD1_OCC_LOCAL and non0tab is not None and nao >= XCHE_LOCAL_MIN_NAO
+    gr = None
+    if grid_response and local_all:
+        from socutils.hessian import rks_grid_response
+        gr = rks_grid_response.Fock1GR(hessobj, grids, xctype)
     for ao, mask, weight, coords in ni.block_loop(mol, grids, nao, ao_deriv, blk_mem):
         ng = weight.size
         p0, p1 = p1, p1 + ng
         if local_all:
+            if gr is not None:
+                gr.block(p0, ng)
             _xc_deriv1_occ_local(ni, mf.xc, xctype, gga, nvar, ao, weight, p0, dm0, atom_of, non0tab, nf_shell,
-                                 nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local)
+                                 nsub, libdft, mocc, vmat, v_ip, dgemm, mkl_local, gr)
             continue
         aoT, cs = _ao_stack(ao)
         dT = numpy.empty((nk, nao, ng))                    # D phi_k^T (dm0 symmetric)
@@ -2162,12 +2185,18 @@ def xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory=4000, occ=False):
             for x in range(3):
                 vmat[ia, x] += lib.dot(v_ip[x, p0:p1].T, mocc[p0:p1])
         vmat *= -1
+        if grid_response and gr is None:
+            from socutils.hessian import rks_grid_response
+            vmat += rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, C=mocc, with_hess=False, grids=grids)[1]
         return vmat
     vmat = vmat.reshape(natm, 3, nao, nao)
     for ia in range(natm):
         p0, p1 = aoslices[ia][2:]
         vmat[ia, :, p0:p1] += v_ip[:, p0:p1]
         vmat[ia] = -vmat[ia] - vmat[ia].transpose(0, 2, 1)
+    if grid_response:
+        from socutils.hessian import rks_grid_response
+        vmat = vmat + rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, with_hess=False, grids=grids)[1]
     return vmat
 
 
@@ -2213,11 +2242,7 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     vj_occ = occ and vj.shape[-1] == mocc.shape[1] != vj.shape[-2]
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
-    h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
-    if _strict_grid(hessobj):
-        from socutils.hessian import rks_grid_response
-        h1ao += rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, C=mocc if occ else None,
-                                              with_hess=False)[1]
+    h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ, grid_response=_strict_grid(hessobj))
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     for ia in range(mol.natm):
         h = hcore_deriv(ia) if vj_occ else vj[ia] + hcore_deriv(ia)
