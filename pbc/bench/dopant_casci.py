@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 '''
+Command-line driver for production and ablation runs (restartable stages, many switches).  For how to use the
+periodic modules in your own script see examples/pbc/ (short scripts, one topic each).
+
 Gamma-point periodic two-component calculation of a lanthanide dopant:
 RSDF Coulomb integrals -> Kramers-restricted HF or KS (--xc) with one-centre
 X2CAMF and the dopant 4f shell fractionally occupied (chosen by character) ->
 CASCI(4f) on the 4f spinors.
 
-    python 14-periodic_dopant_casci.py eu_yso_x2 --workdir run_eu --max-memory 400000
+    python dopant_casci.py eu_yso_x2 --workdir run_eu --max-memory 400000
 
 Every stage writes to --workdir and is reused on a second run:
   cderi.h5   the RSDF vectors, S, V_ne, E_nn (RSDF.load)      [the expensive step]
@@ -121,7 +124,7 @@ args = p.parse_args()
 
 # MPI (SPMD, --jk thc only): every rank runs this script; the THC build and every J/K (SCF, CAHF, CASCI core) are
 # split over the ranks and summed, rank 0 broadcasts the orbitals/densities, so all ranks follow the same path.
-# Only rank 0 prints and writes files.   mpirun -np N python -m mpi4py 14-periodic_dopant_casci.py ... --jk thc
+# Only rank 0 prints and writes files.   mpirun -np N python -m mpi4py dopant_casci.py ... --jk thc
 comm = None
 if any(k in os.environ for k in ('PMI_SIZE', 'PMI_RANK', 'OMPI_COMM_WORLD_SIZE', 'PMIX_RANK')):
     from mpi4py import MPI

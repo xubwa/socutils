@@ -7,6 +7,7 @@ unit-tested in `../test/`; these benchmarks are measurements, not tests.
 
 | script | question |
 |---|---|
+| `dopant_casci.py` | command-line driver of the dopant pipeline (RSDF or THC -> fractional SCF -> CAHF -> CASCI -> W_NSM, d00), restartable; the short usage examples are in `examples/pbc/` |
 | `cells.py` | benchmark crystals (alpha-quartz, A-type Y2O3, 32-atom Y2SiO5) and basis trimming |
 | `rsjk_precision.py` | how accurate is pyscf RSJK J vs `cell.precision`, and what does it cost? |
 | `gdf_aux.py etb\|auxgen\|j2c` | GDF J and K error vs auxiliary basis, and the metric handling |
