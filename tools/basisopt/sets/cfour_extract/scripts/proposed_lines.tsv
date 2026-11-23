@@ -1,0 +1,56 @@
+entry	proposed information line	smallest j-pair overlap	largest same-kappa overlap	remarks
+CU:PVTZ-SO	2  1 2  2 1	1.000	0.00	p: A=None B=2; d: A=2 B=1
+CU:PVTZ-SOF	2  1 2  2 1	1.000	0.00	p: A=None B=2; d: A=2 B=1
+TH:DYTZ-SO	3  1 6  2 4  3 2	0.972	0.00	
+TH:DYTZ-SOF	3  1 6  2 4  3 2	0.972	0.00	
+U:DYTZ-SOF	3  1 6  2 4  3 2	0.968	0.00	
+U:DYTZ-SO	3  1 6  2 4  3 2	0.968	0.00	
+PA:DYTZ-SO	3  1 6  2 4  3 2	0.970	0.00	
+PA:DYTZ-SON	3  1 6  2 4  3 2	0.970	1.00	f: two shells of one kappa overlap 1.00
+U:DYTZ-SON	3  1 6  2 4  3 2	0.953	1.00	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+TH:DYVTZ-SO	3  1 6  2 4  3 2	0.958	1.00	p: two shells of one kappa overlap 0.90; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+PA:DYVTZ-SO	3  1 6  2 4  3 2	0.954	1.00	p: two shells of one kappa overlap 0.90; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+U:DYVTZ-SO	3  1 6  2 4  3 2	0.953	1.00	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+U:DYPVTZ-SO	3  1 6  2 4  3 2	0.953	1.00	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+PA:DYPVTZ-SO	3  1 6  2 4  3 2	0.954	1.00	p: two shells of one kappa overlap 0.90; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+TH:DYPVTZ-SO	3  1 6  2 4  3 2	0.958	1.00	p: two shells of one kappa overlap 0.90; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+U:DYPVQZ-SO	3  1 6  2 4  3 2	0.864	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.84; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+PA:DYVQZ-SO	3  1 6  2 4  3 2	0.873	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.85; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+PA:DYPVQZ-SO	3  1 6  2 4  3 2	0.873	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.85; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+TH:DYVQZ-SO	3  1 6  2 4  3 2	0.937	1.00	p: two shells of one kappa overlap 0.92; d: two shells of one kappa overlap 0.98; f: two shells of one kappa overlap 1.00
+TH:DYPVQZ-SO	3  1 6  2 4  3 2	0.937	1.00	p: two shells of one kappa overlap 0.92; d: two shells of one kappa overlap 0.98; f: two shells of one kappa overlap 1.00
+U:DYVQZ-SO	3  1 6  2 4  3 2	0.864	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.84; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+U:DYVDZ-SO	3  1 6  2 4  3 2	0.957	0.72	p: two shells of one kappa overlap 0.72
+U:DYPVDZ-SO	3  1 6  2 4  3 2	0.957	0.72	p: two shells of one kappa overlap 0.72
+NP:DYVDZ-SO	3  1 6  2 4  3 2	0.954	0.72	p: two shells of one kappa overlap 0.72
+NP:DYPVDZ-SO	3  1 6  2 4  3 2	0.954	0.72	p: two shells of one kappa overlap 0.72
+PU:DYVDZ-SO	3  1 6  2 4  3 2	0.950	0.72	p: two shells of one kappa overlap 0.72
+PU:DYPVDZ-SO	3  1 6  2 4  3 2	0.950	0.72	p: two shells of one kappa overlap 0.72
+NP:DYPVTZ-SO	3  1 6  2 4  3 2	0.948	0.99	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 0.99
+PU:DYPVTZ-SO	3  1 6  2 4  3 2	0.942	0.99	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 0.99
+NP:DYVTZ-SO	3  1 6  2 4  3 2	0.948	0.99	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 0.99
+PU:DYVTZ-SO	3  1 6  2 4  3 2	0.942	0.99	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 0.99
+PU:DYVQZ-SO	3  1 6  2 4  3 2	0.867	0.99	p: A=6 B=0; p: two shells of one kappa overlap 0.87; d: A=4 B=0; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 0.99
+PU:DYPVQZ-SO	3  1 6  2 4  3 2	0.867	0.99	p: A=6 B=0; p: two shells of one kappa overlap 0.87; d: A=4 B=0; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 0.99
+NP:DYVQZ-SO	3  1 6  2 4  3 2	0.873	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.87; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+NP:DYPVQZ-SO	3  1 6  2 4  3 2	0.873	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.87; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+RH:DYPVTZ-SO	2  1 4  2 2	0.999	0.13	
+RH:DYPVQZ-SO	2  1 4  2 2	0.999	0.11	
+IR:DYPVTZ-SO	3  1 5  2 3  3 1	0.977	0.51	d: two shells of one kappa overlap 0.51
+IR:DYPVQZ-SO	3  1 5  2 3  3 1	0.895	0.97	p: A=5 B=0; p: two shells of one kappa overlap 0.97; d: two shells of one kappa overlap 0.66
+HG:DYPVTZ-SO	3  1 5  2 3  3 1	0.974	0.57	d: two shells of one kappa overlap 0.57
+HG:DYPVQZ-SO	3  1 5  2 3  3 1	0.853	0.95	p: A=5 B=0; p: two shells of one kappa overlap 0.95; d: two shells of one kappa overlap 0.65
+AU:DYPVQZ-SO	3  1 5  2 3  3 1	0.986	0.72	p: two shells of one kappa overlap 0.72; d: two shells of one kappa overlap 0.67
+PT:DYPVQZ-SO	3  1 5  2 3  3 1	0.986	0.73	p: two shells of one kappa overlap 0.73; d: two shells of one kappa overlap 0.66
+PT:DYPVTZ-SO	3  1 5  2 3  3 1	0.984	0.52	d: two shells of one kappa overlap 0.52
+YB:DYPVTZ-SO	3  1 5  2 3  3 1	0.963	0.99	p: two shells of one kappa overlap 0.81; d: two shells of one kappa overlap 0.99
+YB:DYPVQZ-SO	3  1 5  2 3  3 1	0.987	0.99	p: two shells of one kappa overlap 0.95; d: two shells of one kappa overlap 0.99
+U:DYPCVTZ-SO	3  1 6  2 4  3 2	0.953	1.00	p: two shells of one kappa overlap 0.91; d: two shells of one kappa overlap 0.99; f: two shells of one kappa overlap 1.00
+U:DYPCVQZ-SO	3  1 6  2 4  3 2	0.864	1.00	p: A=6 B=0; p: two shells of one kappa overlap 0.84; d: two shells of one kappa overlap 0.99; f: A=2 B=1; f: two shells of one kappa overlap 1.00
+ND:DYPVTZ-SO	3  1 5  2 3  3 1	0.990	0.99	p: two shells of one kappa overlap 0.82; d: two shells of one kappa overlap 0.99
+AU:DYPVTZ-SOB	3  1 5  2 3  3 1	0.984	0.52	d: two shells of one kappa overlap 0.52
+AU:DYPVTZ-SOG	3  1 5  2 3  3 1	0.984	0.53	d: two shells of one kappa overlap 0.53
+AU:DYPVTZ-SOG2	3  1 5  2 3  3 1	0.986	0.00	
+BR:PVTZ-SO1P	1  1 1	1.000	0.00	library has "2  1 3  2 1": wrong, only the 2p shell is j-adapted, d is spin-free
+BR:PVTZ-SO2P	1  1 2	1.000	0.00	library has "2  1 3  2 1": wrong, 2p and 3p are j-adapted, d is spin-free
+BR:PVTZ-SO3P	1  1 3	1.000	0.00	library has "2  1 3  2 1": wrong in d (spin-free, 1 contracted + 2 primitives)

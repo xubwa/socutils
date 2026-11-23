@@ -1,0 +1,178 @@
+NEAR-DEPENDENT AT:ADYCVQZ-SF smallest overlap eigenvalue 4.9e-17
+NEAR-DEPENDENT BI:ADYCVQZ-SF smallest overlap eigenvalue 3.7e-17
+NEAR-DEPENDENT PB:ADYCVQZ-SF smallest overlap eigenvalue -7.7e-18
+NEAR-DEPENDENT PO:ADYCVQZ-SF smallest overlap eigenvalue 7.1e-17
+NEAR-DEPENDENT RN:ADYCVQZ-SF smallest overlap eigenvalue -2.2e-17
+NEAR-DEPENDENT TL:ADYCVQZ-SF smallest overlap eigenvalue -2.1e-16
+NEAR-DEPENDENT AT:ADYCVQZ-SO smallest overlap eigenvalue -3.9e-17
+NEAR-DEPENDENT BI:ADYCVQZ-SO smallest overlap eigenvalue -7.7e-17
+NEAR-DEPENDENT PB:ADYCVQZ-SO smallest overlap eigenvalue -5.9e-17
+NEAR-DEPENDENT PO:ADYCVQZ-SO smallest overlap eigenvalue -8.2e-17
+NEAR-DEPENDENT RN:ADYCVQZ-SO smallest overlap eigenvalue -3.1e-17
+NEAR-DEPENDENT TL:ADYCVQZ-SO smallest overlap eigenvalue -1.2e-16
+NEAR-DEPENDENT GE:APCV5Z-DE4 smallest overlap eigenvalue 4.4e-07
+MALFORMED GA:APCV5Z-X2C occurrence 1 (line 171968): header asks for 982 numbers, body has 984
+SKIPPED GA:APCV5Z-X2C - no well-formed occurrence
+MALFORMED F:APCV5Z_X2C occurrence 1 (line 155469): header asks for 511 numbers, body has 512
+SKIPPED F:APCV5Z_X2C - no well-formed occurrence
+MALFORMED AL:APCV6Z-DE4 occurrence 1 (line 188284): zero/invalid exponents for l = [5, 6] (body does not match its header layout); not extracted
+NEAR-DEPENDENT CL:APCV6Z-DE4 smallest overlap eigenvalue 3.4e-10
+NEAR-DEPENDENT P:APCV6Z-DE4 smallest overlap eigenvalue 1.7e-11
+NEAR-DEPENDENT SI:APCV6Z-DE4 smallest overlap eigenvalue 2.3e-10
+NEAR-DEPENDENT CL:APCV6Z_X2C smallest overlap eigenvalue 5.0e-07
+MALFORMED F:APCV6Z_X2C occurrence 1 (line 155348): header asks for 451 numbers, body has 452
+SKIPPED F:APCV6Z_X2C - no well-formed occurrence
+MALFORMED GE:APCVDZ-DE4 occurrence 1 (line 196691): zero/invalid exponents for l = [2, 3] (body does not match its header layout); not extracted
+MALFORMED B:APCVQZ-DE4 occurrence 1 (line 183258): zero/invalid exponents for l = [3, 4] (body does not match its header layout); not extracted
+MALFORMED F:APCVQZ_X2C occurrence 1 (line 155562): header asks for 188 numbers, body has 242
+SKIPPED F:APCVQZ_X2C - no well-formed occurrence
+MALFORMED S:APV(5+d)Z-DE4 occurrence 1 (line 194913): zero/invalid exponents for l = [5] (body does not match its header layout); not extracted
+NEAR-DEPENDENT AL:APV(6+d)Z-DE4 smallest overlap eigenvalue 7.7e-07
+SPELLING O:APV5Z_X2C also exists as APV5Z-X2C; the -X2C entry is used
+NEAR-DEPENDENT AL:APV6Z-DE4 smallest overlap eigenvalue 7.7e-07
+SPELLING O:APV6Z_X2C also exists as APV6Z-X2C; the -X2C entry is used
+MALFORMED S:APVDZ-DE4 occurrence 1 (line 193359): zero/invalid exponents for l = [2] (body does not match its header layout); not extracted
+SPELLING O:APVDZ_X2C also exists as APVDZ-X2C; the -X2C entry is used
+MALFORMED PB:APVQZ-DE4 occurrence 1 (line 237257): zero/invalid exponents for l = [2, 3, 4] (body does not match its header layout); not extracted
+SPELLING O:APVQZ_X2C also exists as APVQZ-X2C; the -X2C entry is used
+SPELLING O:APVTZ_X2C also exists as APVTZ-X2C; the -X2C entry is used
+NEAR-DEPENDENT AT:APWCVQZ-DE4 smallest overlap eigenvalue 9.2e-07
+NEAR-DEPENDENT BI:APWCVQZ-DE4 smallest overlap eigenvalue 1.1e-07
+NEAR-DEPENDENT IN:APWCVQZ-DE4 smallest overlap eigenvalue 3.4e-07
+MALFORMED PB:APWCVQZ-DE4 occurrence 1 (line 234267): zero/invalid exponents for l = [2, 3, 4] (body does not match its header layout); not extracted
+NEAR-DEPENDENT PO:APWCVQZ-DE4 smallest overlap eigenvalue 2.9e-07
+NEAR-DEPENDENT RN:APWCVQZ-DE4 smallest overlap eigenvalue 2.8e-07
+NEAR-DEPENDENT SN:APWCVQZ-DE4 smallest overlap eigenvalue 5.0e-07
+NEAR-DEPENDENT TL:APWCVQZ-DE4 smallest overlap eigenvalue 5.5e-08
+NEAR-DEPENDENT RN:APWCVQZ-SO smallest overlap eigenvalue 2.8e-07
+NEAR-DEPENDENT AT:DYCVQZ-SF smallest overlap eigenvalue 2.0e-17
+NEAR-DEPENDENT BI:DYCVQZ-SF smallest overlap eigenvalue -6.6e-20
+NEAR-DEPENDENT PB:DYCVQZ-SF smallest overlap eigenvalue 5.8e-17
+NEAR-DEPENDENT PO:DYCVQZ-SF smallest overlap eigenvalue 1.8e-17
+NEAR-DEPENDENT RN:DYCVQZ-SF smallest overlap eigenvalue -3.9e-17
+NEAR-DEPENDENT TL:DYCVQZ-SF smallest overlap eigenvalue 5.9e-17
+NEAR-DEPENDENT AT:DYCVQZ-SO smallest overlap eigenvalue -5.4e-17
+NEAR-DEPENDENT BI:DYCVQZ-SO smallest overlap eigenvalue -8.7e-18
+NEAR-DEPENDENT PB:DYCVQZ-SO smallest overlap eigenvalue 1.2e-17
+NEAR-DEPENDENT PO:DYCVQZ-SO smallest overlap eigenvalue -1.5e-17
+NEAR-DEPENDENT RN:DYCVQZ-SO smallest overlap eigenvalue -2.8e-17
+NEAR-DEPENDENT TL:DYCVQZ-SO smallest overlap eigenvalue -6.9e-18
+INFO-LINE U:DYPCVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT U:DYPCVQZ-SO smallest overlap eigenvalue 4.3e-07
+NEAR-DEPENDENT U:DYPCVQZ-X2C smallest overlap eigenvalue 5.3e-07
+INFO-LINE U:DYPCVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE NP:DYPVDZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE PU:DYPVDZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE U:DYPVDZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE AU:DYPVQZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE HG:DYPVQZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE IR:DYPVQZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE NP:DYPVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT NP:DYPVQZ-SO smallest overlap eigenvalue 4.2e-07
+INFO-LINE PA:DYPVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT PA:DYPVQZ-SO smallest overlap eigenvalue 3.8e-07
+INFO-LINE PT:DYPVQZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE PU:DYPVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE RH:DYPVQZ-SO empty in GENBAS, used '2  1 4  2 2'
+INFO-LINE TH:DYPVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT TH:DYPVQZ-SO smallest overlap eigenvalue 5.1e-07
+INFO-LINE U:DYPVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT U:DYPVQZ-SO smallest overlap eigenvalue 4.3e-07
+INFO-LINE YB:DYPVQZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+NEAR-DEPENDENT NP:DYPVQZ-X2C smallest overlap eigenvalue 5.0e-07
+NEAR-DEPENDENT PA:DYPVQZ-X2C smallest overlap eigenvalue 4.7e-07
+NEAR-DEPENDENT TH:DYPVQZ-X2C smallest overlap eigenvalue 6.6e-07
+NEAR-DEPENDENT U:DYPVQZ-X2C smallest overlap eigenvalue 5.3e-07
+INFO-LINE HG:DYPVTZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE IR:DYPVTZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE ND:DYPVTZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE NP:DYPVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE PA:DYPVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT PA:DYPVTZ-SO smallest overlap eigenvalue 6.2e-07
+INFO-LINE PT:DYPVTZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+INFO-LINE PU:DYPVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE RH:DYPVTZ-SO empty in GENBAS, used '2  1 4  2 2'
+INFO-LINE TH:DYPVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE U:DYPVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE YB:DYPVTZ-SO empty in GENBAS, used '3  1 5  2 3  3 1'
+NEAR-DEPENDENT PA:DYTZ-DE4 smallest overlap eigenvalue 3.3e-07
+INFO-LINE PA:DYTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT PA:DYTZ-SO smallest overlap eigenvalue 6.2e-08
+INFO-LINE TH:DYTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE U:DYTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT U:DYTZ-SO smallest overlap eigenvalue 4.8e-07
+INFO-LINE NP:DYVDZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE PU:DYVDZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE U:DYVDZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE NP:DYVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT NP:DYVQZ-SO smallest overlap eigenvalue 4.2e-07
+INFO-LINE PA:DYVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT PA:DYVQZ-SO smallest overlap eigenvalue 3.8e-07
+INFO-LINE PU:DYVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE TH:DYVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT TH:DYVQZ-SO smallest overlap eigenvalue 5.1e-07
+INFO-LINE U:DYVQZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT U:DYVQZ-SO smallest overlap eigenvalue 4.3e-07
+NEAR-DEPENDENT NP:DYVQZ-X2C smallest overlap eigenvalue 5.0e-07
+NEAR-DEPENDENT PA:DYVQZ-X2C smallest overlap eigenvalue 4.7e-07
+NEAR-DEPENDENT TH:DYVQZ-X2C smallest overlap eigenvalue 6.6e-07
+NEAR-DEPENDENT U:DYVQZ-X2C smallest overlap eigenvalue 5.3e-07
+INFO-LINE NP:DYVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE PA:DYVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT PA:DYVTZ-SO smallest overlap eigenvalue 6.2e-07
+INFO-LINE PU:DYVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE TH:DYVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+INFO-LINE U:DYVTZ-SO empty in GENBAS, used '3  1 6  2 4  3 2'
+NEAR-DEPENDENT GE:PCV5Z-DE4 smallest overlap eigenvalue 4.4e-07
+MALFORMED N:PCV5Z-DE4 occurrence 1 (line 185760): zero/invalid exponents for l = [2, 3, 4] (body does not match its header layout); not extracted
+MALFORMED C:PCV5Z_X2C occurrence 1 (line 150960): header asks for 412 numbers, body has 398
+SKIPPED C:PCV5Z_X2C - no well-formed occurrence
+SPELLING O:PCV5Z_X2C also exists as PCV5Z-X2C; the -X2C entry is used
+NEAR-DEPENDENT AL:PCV6Z-DE4 smallest overlap eigenvalue 1.5e-09
+NEAR-DEPENDENT B:PCV6Z-DE4 smallest overlap eigenvalue 2.9e-07
+NEAR-DEPENDENT C:PCV6Z-DE4 smallest overlap eigenvalue 3.4e-07
+NEAR-DEPENDENT CL:PCV6Z-DE4 smallest overlap eigenvalue 3.4e-10
+NEAR-DEPENDENT F:PCV6Z-DE4 smallest overlap eigenvalue 7.5e-07
+NEAR-DEPENDENT N:PCV6Z-DE4 smallest overlap eigenvalue 4.5e-07
+NEAR-DEPENDENT O:PCV6Z-DE4 smallest overlap eigenvalue 5.1e-07
+NEAR-DEPENDENT P:PCV6Z-DE4 smallest overlap eigenvalue 1.7e-11
+NEAR-DEPENDENT SI:PCV6Z-DE4 smallest overlap eigenvalue 2.3e-10
+NEAR-DEPENDENT O:PCV6Z-X2C smallest overlap eigenvalue 4.8e-07
+NEAR-DEPENDENT B:PCV6Z_X2C smallest overlap eigenvalue 3.0e-07
+NEAR-DEPENDENT C:PCV6Z_X2C smallest overlap eigenvalue 3.5e-07
+NEAR-DEPENDENT CL:PCV6Z_X2C smallest overlap eigenvalue 5.0e-07
+MALFORMED F:PCV6Z_X2C occurrence 1 (line 147974): header asks for 368 numbers, body has 369
+SKIPPED F:PCV6Z_X2C - no well-formed occurrence
+NEAR-DEPENDENT N:PCV6Z_X2C smallest overlap eigenvalue 4.1e-07
+SPELLING O:PCV6Z_X2C also exists as PCV6Z-X2C; the -X2C entry is used
+SPELLING O:PCVDZ_X2C also exists as PCVDZ-X2C; the -X2C entry is used
+MALFORMED C:PCVQZ_X2C occurrence 1 (line 151045): header asks for 154 numbers, body has 216
+SKIPPED C:PCVQZ_X2C - no well-formed occurrence
+MALFORMED F:PCVQZ_X2C occurrence 1 (line 148170): header asks for 154 numbers, body has 216
+SKIPPED F:PCVQZ_X2C - no well-formed occurrence
+MALFORMED N:PCVQZ_X2C occurrence 1 (line 150087): header asks for 154 numbers, body has 216
+SKIPPED N:PCVQZ_X2C - no well-formed occurrence
+SPELLING O:PCVQZ_X2C also exists as PCVQZ-X2C; the -X2C entry is used
+SPELLING O:PCVTZ_X2C also exists as PCVTZ-X2C; the -X2C entry is used
+NEAR-DEPENDENT AL:PV(6+d)Z-DE4 smallest overlap eigenvalue 7.7e-07
+SPELLING O:PV5Z_X2C also exists as PV5Z-X2C; the -X2C entry is used
+NEAR-DEPENDENT AL:PV6Z-DE4 smallest overlap eigenvalue 7.7e-07
+SPELLING O:PV6Z_X2C also exists as PV6Z-X2C; the -X2C entry is used
+SPELLING O:PVDZ_X2C also exists as PVDZ-X2C; the -X2C entry is used
+SPELLING O:PVQZ_X2C also exists as PVQZ-X2C; the -X2C entry is used
+INFO-LINE CU:PVTZ-SO empty in GENBAS, used '2  1 2  2 1'
+MALFORMED CL:PVTZD_X2C occurrence 1 (line 154058): header asks for 149 numbers, body has 151
+SKIPPED CL:PVTZD_X2C - no well-formed occurrence
+MALFORMED GE:PVTZ_X2C occurrence 1 (line 144579): header asks for 256 numbers, body has 255
+SKIPPED GE:PVTZ_X2C - no well-formed occurrence
+SPELLING O:PVTZ_X2C also exists as PVTZ-X2C; the -X2C entry is used
+MALFORMED SE:PVTZ_X2C occurrence 1 (line 145563): header asks for 256 numbers, body has 255
+SKIPPED SE:PVTZ_X2C - no well-formed occurrence
+NEAR-DEPENDENT AT:PWCVQZ-DE4 smallest overlap eigenvalue 9.4e-07
+NEAR-DEPENDENT BI:PWCVQZ-DE4 smallest overlap eigenvalue 1.2e-07
+NEAR-DEPENDENT IN:PWCVQZ-DE4 smallest overlap eigenvalue 3.4e-07
+NEAR-DEPENDENT PB:PWCVQZ-DE4 smallest overlap eigenvalue 6.0e-08
+NEAR-DEPENDENT PO:PWCVQZ-DE4 smallest overlap eigenvalue 3.0e-07
+NEAR-DEPENDENT RN:PWCVQZ-DE4 smallest overlap eigenvalue 2.8e-07
+NEAR-DEPENDENT SN:PWCVQZ-DE4 smallest overlap eigenvalue 5.0e-07
+NEAR-DEPENDENT TL:PWCVQZ-DE4 smallest overlap eigenvalue 5.6e-08

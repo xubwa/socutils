@@ -1,0 +1,179 @@
+RN:APWCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 4  2 2  3 1'    [s:32/12 p:31/15 d:22/11 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 2.8e-07 -> 4.3e-06
+      p: contracted shell 5 of 5 (the outermost) removed in both kappas; smallest eigenvalue 1.4e-06 -> 2.9e-05
+      d: contracted shell 3 of 3 (the outermost) removed in both kappas; smallest eigenvalue 9.0e-06 -> 2.7e-03
+XE:PWCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 3  2 2'         [s:30/10 p:23/12 d:17/10 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 6.9e-06 -> 2.6e-05
+      p: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 8.1e-06 -> 4.9e-05
+TH:DYTZ-SO-LD            line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 1'    [s:33/11 p:29/16 d:20/10 f:12/7 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 1.2e-06 -> 5.1e-02
+      f: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 4.7e-05 -> 7.1e-02
+TH:DYTZ-SOF-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 1'    [s:33/11 p:29/16 d:20/10 f:12/7 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 2.7e-06 -> 5.1e-02
+      f: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 5.1e-05 -> 7.1e-02
+U:DYTZ-SOF-LD            line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 1'    [s:33/11 p:29/16 d:20/10 f:12/7 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 2.3e-06 -> 6.5e-02
+      f: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 9.9e-05 -> 6.1e-02
+U:DYTZ-SO-LD             line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:12/9 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.8e-07 -> 6.4e-02
+PA:DYTZ-SO-LD            line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:12/9 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 6.2e-08 -> 6.3e-02
+PA:DYTZ-SON-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:4/4 h:2/2]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 6.2e-08 -> 6.3e-02
+U:DYTZ-SON-LD            line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:4/4 h:2/2]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.9e-06 -> 6.6e-02
+PA:DYVTZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:12/9 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 6.2e-07 -> 6.5e-02
+U:DYPVTZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:4/4 h:2/2]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.9e-06 -> 6.6e-02
+PA:DYPVTZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:4/4 h:2/2]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 6.2e-07 -> 6.5e-02
+TH:DYPVTZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:4/4 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 9.7e-06 -> 5.2e-02
+U:DYPVQZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:37/12 p:34/18 d:24/12 f:15/11 g:6/6 h:4/4 i:2/2]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 3.6e-05 -> 9.1e-05
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.3e-07 -> 9.7e-03
+PA:DYVQZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:37/12 p:34/18 d:24/12 f:14/10 g:4/4 h:3/3 i:1/1]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 3.6e-05 -> 8.4e-05
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 3.8e-07 -> 9.7e-03
+PA:DYPVQZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:37/12 p:34/18 d:24/12 f:15/11 g:5/5 h:4/4 i:2/2]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 3.6e-05 -> 8.4e-05
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 3.8e-07 -> 9.7e-03
+TH:DYPVQZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:37/12 p:34/18 d:24/12 f:15/11 g:5/5 h:4/4 i:1/1]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 2.7e-05 -> 1.0e-04
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 5.1e-07 -> 7.8e-03
+NP:DYPVTZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:4/4 h:2/2]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 1.3e-05 -> 6.8e-02
+NP:DYVTZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:12/9 g:3/3 h:1/1]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 1.3e-05 -> 6.8e-02
+PU:DYVQZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 4  3 2'    [s:37/12 p:34/18 d:24/14 f:14/10 g:5/5 h:3/3 i:1/1]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 4.3e-05 -> 8.0e-05
+PU:DYPVQZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 4  3 2'    [s:37/12 p:34/18 d:24/14 f:15/11 g:6/6 h:4/4 i:2/2]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 4.3e-05 -> 8.0e-05
+NP:DYVQZ-SO-LD           line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:37/12 p:34/18 d:24/12 f:15/11 g:5/5 h:3/3 i:1/1]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 4.8e-05 -> 1.2e-04
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.2e-07 -> 1.0e-02
+NP:DYPVQZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:37/12 p:34/18 d:24/12 f:16/12 g:6/6 h:4/4 i:2/2]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 4.8e-05 -> 1.2e-04
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.2e-07 -> 1.0e-02
+YB:DYPVTZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 2  3 1'    [s:30/10 p:24/14 d:16/9 f:11/6 g:3/3 h:2/2]
+      d: contracted shell 3 of 3 (the outermost) removed in both kappas; smallest eigenvalue 5.6e-05 -> 4.7e-02
+U:DYPCVTZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 2'    [s:33/11 p:29/16 d:20/10 f:13/10 g:5/5 h:2/2]
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.9e-06 -> 6.6e-02
+U:DYPCVQZ-SO-LD          line '3  1 6  2 4  3 2'   -> '3  1 6  2 3  3 1'    [s:37/12 p:34/18 d:24/12 f:15/10 g:6/6 h:5/5 i:2/2]
+      s: contracted s shell 7 of 7 (the outermost) removed; smallest eigenvalue 3.6e-05 -> 9.1e-05
+      d: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 4.3e-07 -> 9.7e-03
+      f: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 4.2e-05 -> 1.5e-02
+ND:DYPVTZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 2  3 1'    [s:30/10 p:24/14 d:16/9 f:11/6 g:3/3 h:2/2]
+      d: contracted shell 3 of 3 (the outermost) removed in both kappas; smallest eigenvalue 2.0e-05 -> 3.0e-02
+GA:DYCVQZ-SO-LD          line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:30/9 p:21/12 d:13/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.3e-05 -> 5.5e-05
+GA:ADYCVQZ-SO-LD         line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:31/10 p:22/13 d:14/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.3e-05 -> 5.5e-05
+GE:DYCVQZ-SO-LD          line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:30/9 p:21/12 d:13/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.7e-05 -> 6.1e-05
+GE:ADYCVQZ-SO-LD         line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:31/10 p:22/13 d:14/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.7e-05 -> 6.1e-05
+AS:DYCVQZ-SO-LD          line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:30/9 p:21/12 d:13/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.7e-05 -> 6.2e-05
+AS:ADYCVQZ-SO-LD         line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:31/10 p:22/13 d:14/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.6e-05 -> 6.2e-05
+SE:DYCVQZ-SO-LD          line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:30/9 p:21/12 d:13/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.5e-05 -> 6.1e-05
+SE:ADYCVQZ-SO-LD         line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:31/10 p:22/13 d:14/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.3e-05 -> 6.1e-05
+BR:DYCVQZ-SO-LD          line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:30/9 p:21/12 d:13/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.2e-05 -> 5.9e-05
+BR:ADYCVQZ-SO-LD         line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:31/10 p:22/13 d:14/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 5.0e-05 -> 5.9e-05
+KR:DYCVQZ-SO-LD          line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:30/9 p:21/12 d:13/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 4.9e-05 -> 5.7e-05
+KR:ADYCVQZ-SO-LD         line '2  1 3  2 1'        -> '2  1 3  2 1'         [s:31/10 p:22/13 d:14/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 4.7e-05 -> 5.6e-05
+IN:DYCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:33/10 p:27/14 d:18/10 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 7.6e-05 -> 1.2e-04
+IN:ADYCVQZ-SO-LD         line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:34/11 p:28/15 d:19/11 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 7.0e-05 -> 1.2e-04
+SN:DYCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:33/10 p:27/14 d:18/10 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 5.1e-05 -> 8.0e-05
+SN:ADYCVQZ-SO-LD         line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:34/11 p:28/15 d:19/11 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 4.6e-05 -> 7.9e-05
+SB:DYCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:33/10 p:27/14 d:18/10 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 3.4e-05 -> 5.1e-05
+SB:ADYCVQZ-SO-LD         line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:34/11 p:28/15 d:19/11 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 3.2e-05 -> 5.0e-05
+TE:DYCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:33/10 p:27/14 d:18/10 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 2.3e-05 -> 3.2e-05
+TE:ADYCVQZ-SO-LD         line '2  1 4  2 2'        -> '2  1 4  2 2'         [s:34/11 p:28/15 d:19/11 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 2.2e-05 -> 3.1e-05
+I:DYCVQZ-SO-LD           line '2  1 4  2 2'        -> '2  1 4  2 1'         [s:33/10 p:27/14 d:18/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 2.4e-05 -> 3.9e-05
+      d: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 9.7e-05 -> 9.2e-03
+I:ADYCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 4  2 1'         [s:34/11 p:28/15 d:19/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 2.2e-05 -> 3.8e-05
+      d: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 9.0e-05 -> 8.1e-03
+XE:DYCVQZ-SO-LD          line '2  1 4  2 2'        -> '2  1 3  2 1'         [s:33/10 p:27/12 d:18/8 f:5/5 g:3/3 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 2.5e-05 -> 4.2e-05
+      p: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 8.4e-05 -> 1.1e-04
+      d: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 8.0e-05 -> 8.1e-03
+XE:ADYCVQZ-SO-LD         line '2  1 4  2 2'        -> '2  1 3  2 1'         [s:34/11 p:28/13 d:19/9 f:6/6 g:4/4 h:1/1]
+      s: contracted s shell 5 of 5 (the outermost) removed; smallest eigenvalue 2.2e-05 -> 4.0e-05
+      p: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 8.1e-05 -> 1.0e-04
+      d: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 7.4e-05 -> 7.1e-03
+TL:DYCVQZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:34/11 p:31/15 d:21/12 f:14/7 g:3/3 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 4.8e-05 -> 1.2e-04
+      p: shared primitive 0.585342 occurred twice, one copy removed; smallest eigenvalue -6.9e-18 -> 4.2e-04
+TL:ADYCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:35/12 p:32/16 d:22/13 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 4.2e-05 -> 1.2e-04
+      p: shared primitive 0.585342 occurred twice, one copy removed; smallest eigenvalue -1.2e-16 -> 4.1e-04
+PB:DYCVQZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:34/11 p:31/15 d:21/12 f:14/7 g:3/3 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 2.7e-05 -> 5.3e-05
+      p: shared primitive 0.679469 occurred twice, one copy removed; smallest eigenvalue 1.2e-17 -> 3.0e-04
+PB:ADYCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:35/12 p:32/16 d:22/13 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 2.5e-05 -> 5.2e-05
+      p: shared primitive 0.679469 occurred twice, one copy removed; smallest eigenvalue -5.9e-17 -> 3.0e-04
+BI:DYCVQZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:34/11 p:31/15 d:21/12 f:14/7 g:3/3 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.7e-05 -> 4.3e-05
+      p: shared primitive 0.643653 occurred twice, one copy removed; smallest eigenvalue -8.7e-18 -> 3.8e-04
+BI:ADYCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:35/12 p:32/16 d:22/13 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.6e-05 -> 4.1e-05
+      p: shared primitive 0.643653 occurred twice, one copy removed; smallest eigenvalue -7.7e-17 -> 3.7e-04
+PO:DYCVQZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:34/11 p:31/15 d:21/12 f:14/7 g:3/3 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.8e-05 -> 3.4e-05
+      p: shared primitive 0.740357 occurred twice, one copy removed; smallest eigenvalue -1.5e-17 -> 2.9e-04
+PO:ADYCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:35/12 p:32/16 d:22/13 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.6e-05 -> 3.3e-05
+      p: shared primitive 0.740357 occurred twice, one copy removed; smallest eigenvalue -8.2e-17 -> 2.9e-04
+AT:DYCVQZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:34/11 p:31/15 d:21/12 f:14/7 g:3/3 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.2e-05 -> 3.6e-05
+      p: shared primitive 0.759663 occurred twice, one copy removed; smallest eigenvalue -5.4e-17 -> 2.8e-04
+AT:ADYCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:35/12 p:32/16 d:22/13 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.1e-05 -> 3.4e-05
+      p: shared primitive 0.759663 occurred twice, one copy removed; smallest eigenvalue -3.9e-17 -> 2.7e-04
+RN:DYCVQZ-SO-LD          line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:34/11 p:31/15 d:21/12 f:14/7 g:3/3 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.4e-05 -> 3.0e-05
+      p: shared primitive 0.819508 occurred twice, one copy removed; smallest eigenvalue -2.8e-17 -> 2.5e-04
+RN:ADYCVQZ-SO-LD         line '3  1 5  2 3  3 1'   -> '3  1 5  2 3  3 1'    [s:35/12 p:32/16 d:22/13 f:15/8 g:4/4 h:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 1.3e-05 -> 2.9e-05
+      p: shared primitive 0.819508 occurred twice, one copy removed; smallest eigenvalue -3.1e-17 -> 2.4e-04
+BR:PV5Z-SO-LD            line '2  1 3  2 1'        -> '2  1 2  2 1'         [s:26/7 p:17/8 d:13/6 f:3/3 g:2/2 h:1/1]
+      s: contracted s shell 4 of 4 (the outermost) removed; smallest eigenvalue 6.2e-05 -> 3.5e-03
+      p: contracted shell 3 of 3 (the outermost) removed in both kappas; smallest eigenvalue 1.0e-05 -> 2.1e-02
+BI:PVQZ-SO-LD            line '3  1 5  2 3  3 1'   -> '3  1 4  2 3  3 1'    [s:31/8 p:30/11 d:21/9 f:14/4 g:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 4.1e-05 -> 1.3e-02
+      p: contracted shell 5 of 5 (the outermost) removed in both kappas; smallest eigenvalue 1.1e-05 -> 5.2e-02
+AS:PVQZ-SO-LD            line '2  1 3  2 1'        -> '2  1 2  2 1'         [s:21/7 p:16/7 d:12/5 f:2/2 g:1/1]
+      p: contracted shell 3 of 3 (the outermost) removed in both kappas; smallest eigenvalue 6.0e-05 -> 7.1e-02
+PB:PVQZ-SO-LD            line '3  1 5  2 3  3 1'   -> '3  1 4  2 3  3 1'    [s:31/8 p:30/11 d:21/9 f:14/4 g:1/1]
+      s: contracted s shell 6 of 6 (the outermost) removed; smallest eigenvalue 3.9e-05 -> 1.4e-02
+      p: contracted shell 5 of 5 (the outermost) removed in both kappas; smallest eigenvalue 8.7e-06 -> 6.0e-02
+GE:PVQZ-SO-LD            line '2  1 3  2 1'        -> '2  1 2  2 1'         [s:21/7 p:16/7 d:12/5 f:2/2 g:1/1]
+      p: contracted shell 3 of 3 (the outermost) removed in both kappas; smallest eigenvalue 3.3e-05 -> 8.1e-02
+SB:PVQZ-SO-LD            line '2  1 4  2 2'        -> '2  1 3  2 2'         [s:30/8 p:23/9 d:17/7 f:2/2 g:1/1]
+      p: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 3.7e-05 -> 5.5e-02
+SN:PVQZ-SO-LD            line '2  1 4  2 2'        -> '2  1 3  2 2'         [s:30/8 p:23/9 d:17/7 f:2/2 g:1/1]
+      p: contracted shell 4 of 4 (the outermost) removed in both kappas; smallest eigenvalue 2.0e-05 -> 6.3e-02
+SI:PVQZ-SO-LD            line '1  1 2'             -> '1  1 1'              [s:16/6 p:11/5 d:3/3 f:2/2 g:1/1]
+      p: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 3.5e-05 -> 9.0e-02
+P:PVQZ-SO-LD             line '1  1 2'             -> '1  1 1'              [s:16/6 p:11/5 d:3/3 f:2/2 g:1/1]
+      p: contracted shell 2 of 2 (the outermost) removed in both kappas; smallest eigenvalue 7.8e-05 -> 8.5e-02

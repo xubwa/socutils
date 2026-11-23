@@ -1,0 +1,26 @@
+pyscf plugins found in 
+/home/xwang405/apps/conda/lib/python3.11/site-packages/pyscf
+/home/xwang405/apps/shciscf/pyscf
+When PYTHONPATH is set, it is recommended to load these plugins through the environment variable PYSCF_EXT_PATH
+== Eu3+ 4f6   (X2CAMF DC-Gaunt AMF, configuration average)
+   E_SCF            full -10819.98960122  truncated -10819.98959543  diff +0.006 mEh
+   eps 4f5/2 (Eh)   full    -1.617655  truncated    -1.617661  diff -5.3e-06
+   eps 4f7/2 (Eh)   full    -1.594373  truncated    -1.594379  diff -5.7e-06
+   eps 5s (Eh)      full    -3.073295  truncated    -3.073298  diff -3.2e-06
+   eps 5p3/2 (Eh)   full    -2.047598  truncated    -2.047602  diff -4.3e-06
+   zeta_4f (cm-1)   full    1459.95  truncated    1459.93  ratio 0.99999
+   <r-3> 4f7/2 (au) full    7.46917  truncated    7.46920  ratio 1.00000   (4f5/2: 7.67381 / 7.67383)
+   F2(4f,4f) (cm-1) full   113148.2  truncated   113148.9  ratio 1.00001
+   F4(4f,4f) (cm-1) full    71014.8  truncated    71015.3  ratio 1.00001
+   F6(4f,4f) (cm-1) full    51100.4  truncated    51100.7  ratio 1.00001
+   contraction error of EU:DYVTZ-SOG-T07 (x2camf-g, Fock of the Ln3+ configuration average in the truncated primitives):
+     4s1/2    -15.429796  diff -3.8e-11
+     5s1/2     -3.073298  diff -4.1e-10
+     4p1/2    -12.664481  diff -1.3e-10
+     5p1/2     -2.209333  diff -1.6e-11
+     4p3/2    -11.569155  diff -5.0e-11
+     5p3/2     -2.047602  diff +8.5e-11
+     4d3/2     -6.989491  diff -7.9e-12
+     4d5/2     -6.791604  diff +3.3e-12
+     4f5/2     -1.617661  diff -1.3e-13
+     4f7/2     -1.594379  diff -6.9e-14
