@@ -1,0 +1,152 @@
+# Builds bin/zshci, or bin/zshci_mpi with MPI=1. Run from this directory:
+#
+#   make                      threads only (OpenMP)
+#   make MPI=1 CXX=mpicxx     MPI + threads
+#   make test                 self-checks
+#   make MAX_DET_WORDS=6      determinants of up to 6 x 64 spinors (default
+#                             4); built in a directory of its own, as
+#                             bin/zshci_w6
+#   make BLAS=none            without BLAS (the FCI kernel then does its
+#                             products as loops; FCI.md)
+#
+# Requires a C++17 compiler with OpenMP, Eigen 3 and HDF5 (a serial build of
+# HDF5 is enough, also for MPI=1: only one rank writes files). HighFive and
+# nlohmann/json are in third_party/.
+#
+# Eigen and HDF5 are looked for in an active conda environment
+# (conda install eigen hdf5), else under /usr. To use other locations, put
+# them into config.mk (not tracked):
+#
+#   EIGEN_ROOT = /path/to/eigen      # the directory that contains Eigen/
+#   HDF5_ROOT  = /path/to/hdf5       # contains include/ and lib/
+#   MKL_LIB    = /path/to/mkl/lib     # contains libmkl_rt.so
+#
+# The FCI kernel (src/zgasci, plain C) is compiled with the C compiler next
+# to CXX and calls BLAS through MKL's single dynamic library mkl_rt.
+
+-include config.mk
+
+CXX        ?= g++
+MPI        ?= 0
+BLAS       ?= mkl
+MKL_LIB    ?= /data/lcheng24/intel/oneapi/mkl/2022.1.0/lib/intel64
+# The C compiler of the same installation as g++ (also under mpicxx), so
+# that C and C++ use one OpenMP runtime.
+ifeq ($(origin CC),default)
+  GXX_DIR := $(dir $(shell command -v g++))
+  CC := $(if $(wildcard $(GXX_DIR)gcc),$(GXX_DIR)gcc,gcc)
+endif
+ifdef CONDA_PREFIX
+  EIGEN_ROOT ?= $(CONDA_PREFIX)/include/eigen3
+  HDF5_ROOT  ?= $(CONDA_PREFIX)
+else
+  EIGEN_ROOT ?= /usr/include/eigen3
+  HDF5_ROOT  ?= /usr
+endif
+
+# -fcx-limited-range: complex products as the textbook formula. Without it
+# the compiler calls a library routine for every product, to get infinities
+# and NaNs right, which makes complex arithmetic several times slower.
+CXXFLAGS  := -std=c++17 -O3 -g -march=core-avx2 -fopenmp -fcx-limited-range \
+             -Wall -Wextra \
+             -Isrc -isystem third_party -isystem $(EIGEN_ROOT) \
+             -isystem $(HDF5_ROOT)/include -MMD -MP
+LDFLAGS   := -fopenmp -L$(HDF5_ROOT)/lib -Wl,-rpath,$(HDF5_ROOT)/lib -lhdf5
+CFLAGS    := -std=c99 -O3 -g -funroll-loops -march=core-avx2 -fopenmp \
+             -fcx-limited-range -MMD -MP
+
+# Largest determinant width in 64-bit words (64 spinors each); every width
+# up to it is compiled. Other values build into directories of their own.
+MAX_DET_WORDS ?= 4
+CXXFLAGS += -DZSHCI_MAX_DET_WORDS=$(MAX_DET_WORDS)
+
+# The objects of the two variants are kept apart.
+ifeq ($(MPI),1)
+  CXXFLAGS += -DZSHCI_USE_MPI
+  BUILD    := build_mpi
+  TARGET   := bin/zshci_mpi
+else
+  BUILD    := build
+  TARGET   := bin/zshci
+endif
+ifeq ($(BLAS),none)
+  CFLAGS   += -DZGASCI_NO_BLAS
+  BUILD    := $(BUILD)_noblas
+  TARGET   := $(TARGET)_noblas
+else
+  LDFLAGS  += -L$(MKL_LIB) -Wl,-rpath,$(MKL_LIB) -Wl,--no-as-needed -lmkl_rt \
+              -Wl,--as-needed
+endif
+ifneq ($(MAX_DET_WORDS),4)
+  BUILD    := $(BUILD)_w$(MAX_DET_WORDS)
+  TARGET   := $(TARGET)_w$(MAX_DET_WORDS)
+endif
+LDFLAGS   += -lm
+
+# The drivers of the diag and select modes, one object for each mode, kind
+# of integrals and width up to MAX_DET_WORDS, all from src/run_modes.cc
+# (run_modes.h); they are most of the compile time and build in parallel.
+# The heaviest come first, so that make -j starts them first.
+RUN_MODES  := select diag
+RUN_KINDS  := complexspinor realspinor unrestricted spatial
+RUN_WIDTHS := $(shell seq $(MAX_DET_WORDS) -1 1)
+RUN_OBJECTS := $(foreach m,$(RUN_MODES),$(foreach k,$(RUN_KINDS),\
+               $(foreach w,$(RUN_WIDTHS),$(BUILD)/run/$(m)_$(k)_$(w).o)))
+# Their debug information is line tables only (enough for profilers and
+# backtraces): full -g would make each of them twice as slow to compile and
+# the program 640 MB instead of 190 MB, as every one carries its own copy of
+# the description of every type. RUN_DEBUG=-g gives the full one.
+RUN_DEBUG ?= -g1
+run_word  = $(word $2,$(subst _, ,$1))
+run_flags = -DZSHCI_RUN_MODE_$(call run_word,$1,1) \
+            -DZSHCI_RUN_KIND_$(call run_word,$1,2) \
+            -DZSHCI_RUN_WIDTH=$(call run_word,$1,3)
+
+SOURCES   := $(filter-out src/run_modes.cc,$(wildcard src/*.cc))
+OBJECTS   := $(RUN_OBJECTS) $(patsubst src/%.cc,$(BUILD)/%.o,$(SOURCES)) \
+             $(BUILD)/zgasci.o $(BUILD)/gas_dist.o
+
+TEST         := $(BUILD)/zshci_test
+TEST_FCIDUMP ?= test/data/o2_4c.fcidump
+
+all: $(TARGET)
+
+# Self-checks; needs a small complex FCIDUMP (at most 32 spinors).
+test: $(TEST)
+	$(TEST) $(TEST_FCIDUMP)
+
+# The test compiles what it runs itself, without main.o and the drivers.
+$(TEST): $(BUILD)/zshci_test.o \
+         $(filter-out $(BUILD)/main.o $(RUN_OBJECTS),$(OBJECTS))
+	$(CXX) -o $@ $^ $(LDFLAGS)
+
+$(BUILD)/zshci_test.o: test/zshci_test.cc | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJECTS) | bin
+	$(CXX) -o $@ $(OBJECTS) $(LDFLAGS)
+
+$(BUILD)/%.o: src/%.cc | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# A static pattern: as a plain pattern rule it would also offer itself, via
+# the built-in rule % : %.o, for remaking the .d files.
+$(RUN_OBJECTS): $(BUILD)/run/%.o: src/run_modes.cc | $(BUILD)/run
+	$(CXX) $(CXXFLAGS) $(RUN_DEBUG) $(call run_flags,$*) -c $< -o $@
+
+# zgasci.c includes the .inc files next to it.
+$(BUILD)/zgasci.o: src/zgasci/zgasci.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/gas_dist.o: src/gas_dist.c | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD) $(BUILD)/run bin:
+	mkdir -p $@
+
+clean:
+	rm -rf build build_mpi build_noblas build_mpi_noblas bin
+
+.PHONY: all clean test
+
+-include $(OBJECTS:.o=.d) $(BUILD)/zshci_test.d
