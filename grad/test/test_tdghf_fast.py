@@ -73,6 +73,18 @@ class KnownValues(unittest.TestCase):
         gf, go = _grads('spinor')[1:]
         self.assertAlmostEqual(abs(gf - go).max(), 0, 7)
 
+    def test_gks_pbe0_fixed_grid(self):
+        '''grid_response False: both XC parts on the fixed grid on both paths'''
+        mf, td = _run('gks', _mol())
+        tg = tdghf_grad.Gradients(td)
+        tg.grid_response = False
+        gf = tg.grad_omega(STATE)
+        tg.fast = False
+        go = tg.grad_omega(STATE)
+        self.assertAlmostEqual(abs(gf - go).max(), 0, 7)
+        tg.grid_response = True
+        self.assertGreater(abs(tg.grad_omega(STATE) - go).max(), 1e-5)    # the grid response is not negligible
+
     def test_spinor_rijcosx_fd(self):
         mf, td = _run('spinor_rijcosx', _mol())
         g = td.Gradients().grad_omega(STATE)
