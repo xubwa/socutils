@@ -68,6 +68,56 @@ def partition_grad(grids, e, mol=None):
     return out
 
 
+def _partition_args(grids, mol):
+    from socutils.dft import grids as sgrids
+    kind, radii = sgrids.partition_params(grids, mol)
+    if kind is None:
+        raise NotImplementedError('grid response: partition %s' % getattr(grids, 'becke_scheme', None))
+    pr = lib.c_null_ptr() if radii is None else numpy.ascontiguousarray(radii).ctypes.data_as(ctypes.c_void_p)
+    atm = numpy.ascontiguousarray(mol.atom_coords(), dtype=numpy.double)
+    return atm, pr, radii, ctypes.c_int(0 if kind == 'becke' else 1)
+
+
+def partition_deriv1(grids, idx, mol=None):
+    """d w_g / d R (len(idx), natm, 3) at the grid points idx (lib/dft/becke_hess.c), the points moving with their
+    owners, for the partition the grid ran (Becke / SSF)"""
+    if mol is None:
+        mol = grids.mol
+    libdft = _lib()
+    if libdft is None or not hasattr(libdft, 'SOCDFTpartition_deriv1'):
+        raise NotImplementedError('partition_deriv1: lib/dft not built')
+    atm, pr, radii, sch = _partition_args(grids, mol)
+    coords = numpy.ascontiguousarray(grids.coords[idx], dtype=numpy.double)
+    w = numpy.ascontiguousarray(grids.weights[idx], dtype=numpy.double)
+    owner = numpy.ascontiguousarray(grids.atm_idx[idx], dtype=numpy.int32)
+    out = numpy.empty((w.size, mol.natm, 3))
+    libdft.SOCDFTpartition_deriv1(
+        out.ctypes.data_as(ctypes.c_void_p), coords.ctypes.data_as(ctypes.c_void_p), w.ctypes.data_as(ctypes.c_void_p),
+        owner.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(w.size), atm.ctypes.data_as(ctypes.c_void_p), pr,
+        ctypes.c_int(mol.natm), sch)
+    return out
+
+
+def partition_hess(grids, e, mol=None):
+    """sum_g e_g d^2 w_g / d R_A d R_B (natm, natm, 3, 3), e (ngrid) without the weight (lib/dft/becke_hess.c)"""
+    if mol is None:
+        mol = grids.mol
+    libdft = _lib()
+    if libdft is None or not hasattr(libdft, 'SOCDFTpartition_hess'):
+        raise NotImplementedError('partition_hess: lib/dft not built')
+    atm, pr, radii, sch = _partition_args(grids, mol)
+    coords = numpy.ascontiguousarray(grids.coords, dtype=numpy.double)
+    w = numpy.ascontiguousarray(grids.weights, dtype=numpy.double)
+    owner = numpy.ascontiguousarray(grids.atm_idx, dtype=numpy.int32)
+    e = numpy.ascontiguousarray(e, dtype=numpy.double)
+    out = numpy.zeros((mol.natm, mol.natm, 3, 3))
+    libdft.SOCDFTpartition_hess(
+        out.ctypes.data_as(ctypes.c_void_p), coords.ctypes.data_as(ctypes.c_void_p), w.ctypes.data_as(ctypes.c_void_p),
+        owner.ctypes.data_as(ctypes.c_void_p), e.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(w.size),
+        atm.ctypes.data_as(ctypes.c_void_p), pr, ctypes.c_int(mol.natm), sch)
+    return out
+
+
 def owner_sum(grids, v, natm=None):
     '''sum_{g owned by A} v[:, g], (natm, 3); v (3, ngrid)'''
     if natm is None:

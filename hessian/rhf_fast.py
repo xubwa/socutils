@@ -1230,10 +1230,10 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     de2 += ej - hyb * ek
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     t1 = log.timer_debug1('RKS partial hessian, 1e + 2e', *time0)
+    de2 += xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory)
     if _strict_grid(hessobj):
-        de2 += _xc_grid_response(hessobj, mo_coeff, mo_occ)[0]
-    else:
-        de2 += xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory)
+        from socutils.hessian import rks_grid_response
+        de2 += rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, with_fock=False)[0]
     log.timer_debug1('RKS partial hessian, XC', *t1)
     log.timer('RKS partial hessian', *time0)
     return de2
@@ -2213,12 +2213,11 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     vj_occ = occ and vj.shape[-1] == mocc.shape[1] != vj.shape[-2]
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
+    h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
     if _strict_grid(hessobj):
-        h1ao = _xc_grid_response(hessobj, mo_coeff, mo_occ)[1].copy()
-        if occ:
-            h1ao = lib.einsum('axpq,qi->axpi', h1ao, mocc)
-    else:
-        h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
+        from socutils.hessian import rks_grid_response
+        h1ao += rks_grid_response.corrections(hessobj, mo_coeff, mo_occ, C=mocc if occ else None,
+                                              with_hess=False)[1]
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     for ia in range(mol.natm):
         h = hcore_deriv(ia) if vj_occ else vj[ia] + hcore_deriv(ia)

@@ -24,8 +24,16 @@ def _mol(coords=None):
     return mol
 
 
+PART = None        # None: pyscf's grid (Becke); 'ssf' / 'becke': socutils.dft.grids with that partition
+
+
 def _scf(mol, xc, dm0=None):
     mf = dft.RKS(mol, xc=xc)
+    if PART is not None:
+        from socutils.dft import grids as sgrids
+        sgrids.PARTITION = PART
+        mf.grids = sgrids.Grids(mol)
+        mf.grids.prune = None
     mf.grids.atom_grid = (30, 50)
     mf.conv_tol = 1e-12
     mf.conv_tol_grad = 1e-9
@@ -62,11 +70,28 @@ def _check(test, xc):
 
 
 class KnownValues(unittest.TestCase):
+    def tearDown(self):
+        global PART
+        PART = None
+        from socutils.dft import grids as sgrids
+        sgrids.PARTITION = 'auto'
+
     def test_pbe(self):
         _check(self, 'pbe')
 
     def test_tpss(self):
         _check(self, 'tpss')
+
+    def test_pbe_ssf(self):
+        '''socutils grid, SSF partition (the 'auto' partition from 100 atoms on)'''
+        global PART
+        PART = 'ssf'
+        _check(self, 'pbe')
+
+    def test_pbe_socutils_becke(self):
+        global PART
+        PART = 'becke'
+        _check(self, 'pbe')
 
 
 if __name__ == '__main__':
