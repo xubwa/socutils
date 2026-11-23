@@ -8,7 +8,11 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 
 EH2MEV = 27211.386
-rows = [l.split() for l in open('50-box_darwin_heavy.Rn.out') if l.startswith('Rn')]
+# L = 6 bohr is left out: there the overlap with the neighbouring atoms adds
+# genuine relativistic contributions (E1 / formula = 1.11)
+rows = [l.split() for f in ('50-box_darwin_heavy.Rn.small.out', '50-box_darwin_heavy.Rn.out')
+        for l in open(f) if l.startswith('Rn') and float(l.split()[2]) >= 8]
+rows.sort(key=lambda r: float(r[2]))
 L = numpy.array([float(r[2]) for r in rows])
 e_sf = -numpy.array([float(r[4]) for r in rows]) * EH2MEV
 e_so = -numpy.array([float(r[5]) for r in rows]) * EH2MEV
