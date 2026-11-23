@@ -60,7 +60,7 @@ def ewald_point_charges(a, coords, charges, eta=1.0, prec=1e-16):
     lnp = -np.log(prec)
 
     rcut = (np.sqrt(lnp) + 2.0) / eta
-    T = lattice_translations(a, rcut + np.ptp(coords, axis=0).max())
+    T = lattice_translations(a, rcut + np.linalg.norm(np.ptp(coords, axis=0)))
     e_real = 0.0
     for i in range(len(q)):
         r = np.linalg.norm(coords[:, None, :] + T[None, :, :] - coords[i], axis=2)
@@ -113,7 +113,7 @@ def gaussian_charges_ewald(a, coords, charges, alphas, eta=1.0, prec=1e-16):
     g = alphas[:, None] * alphas[None, :] / (alphas[:, None] + alphas[None, :])
     beta = 1.0 / np.sqrt(1.0 / g + 1.0 / eta**2)
     rcut = (np.sqrt(lnp) + 2.0) / beta.min()
-    T = lattice_translations(a, rcut + np.ptp(coords, axis=0).max())
+    T = lattice_translations(a, rcut + np.linalg.norm(np.ptp(coords, axis=0)))
     e_real = 0.0
     for i in range(len(q)):
         r = np.linalg.norm(coords[:, None, :] + T[None, :, :] - coords[i], axis=2)
@@ -228,7 +228,7 @@ def image_mole(cell, rpair):
     a = cell.lattice_vectors()
     coords0 = cell.atom_coords()
     natm0 = cell.natm
-    span = np.ptp(coords0, axis=0).max() if natm0 > 1 else 0.0
+    span = np.linalg.norm(np.ptp(coords0, axis=0)) if natm0 > 1 else 0.0   # bounds the largest atom-atom distance
     T = lattice_translations(a, rpair + span)
     T = T[np.argsort(np.linalg.norm(T, axis=1), kind='stable')]
     assert np.linalg.norm(T[0]) < 1e-12

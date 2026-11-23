@@ -8,10 +8,12 @@ tools.pbc.madelung; Makov and Payne, PRB 51, 4014 (1995), first order):
 
     E(isolated) ~= E(periodic) + q^2 nu_M / 2.
 
-The remaining finite-size error is the one of the neutral cell (He+ / He in cubic boxes, X2CAMF GHF: after the
-correction the charged and the neutral errors agree to 1e-6 Eh at L = 10..40 bohr and fall off as 1/L^3), so the
-Makov-Payne quadrupole term is not added.  nu_M is that of the cell itself, whatever the k-point mesh: the charge
-density is periodic with the cell.
+The remaining finite-size error falls off as 1/L^3, like that of the neutral cell, but with another coefficient:
+the next Makov-Payne term, 2 pi q Q / (3 V) with Q the second moment of the electron density, is not added.  He+
+/ He in cubic boxes of edge L (bohr), cc-pVDZ, error of the corrected energy against the molecule: -3.28 / L^3 and
+-4.87 / L^3 (L = 12, 16, 20; the difference is that term, <r^2> = 0.75 for He+).  In a minimal basis the two
+coincide (sto-3g: to 1e-6 Eh at L = 10..40), which is not general.  nu_M is that of the cell itself, whatever
+the k-point mesh: the charge density is periodic with the cell.
 
 Orbital energies of a charged cell are shifted by a constant (the G = 0 potential is dropped); take ionization or
 attachment energies from total energies.

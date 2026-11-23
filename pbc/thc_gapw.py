@@ -335,7 +335,8 @@ class GAPWJ:
         if r_v <= 0:
             return out
         A_ = np.asarray(cell.lattice_vectors())
-        n = [int(np.ceil(r_v / np.linalg.norm(A_[i]))) + 1 for i in range(3)]
+        B_ = np.linalg.inv(A_).T                                      # dual vectors: |n_i| <= r |b_i| (any cell shape)
+        n = [int(np.ceil(r_v * np.linalg.norm(B_[i]))) + 1 for i in range(3)]
         T = np.array([[i, j, k] for i in range(-n[0], n[0] + 1) for j in range(-n[1], n[1] + 1)
                       for k in range(-n[2], n[2] + 1)]) @ A_
         for t in T:

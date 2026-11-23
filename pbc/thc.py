@@ -507,6 +507,37 @@ def ft_post(Pg, w):
     return out
 
 
+def ft_label(parts, w):
+    '''(2 nG, n) real, the layout of ft_post, of the per-label FT B[:, c] = (-i)^lq[c] S[:, cs[c]] R[:, cr[c]]
+    from its separable parts (THCExchange._label_parts); OpenMP kernel, else numpy.'''
+    S, R, cs, cr, lq = parts
+    lib_ = _libthc()
+    if lib_ is None or not hasattr(lib_, 'SOCTHCft_label'):
+        return ft_post(np.asfortranarray(((-1j) ** lq)[None, :] * S[:, cs] * R[:, cr]), w)
+    import ctypes
+    g, n = len(S), len(cs)
+    out = np.empty((2 * g, n))
+    w = np.ascontiguousarray(w, dtype=float)
+    lib_.SOCTHCft_label(_ptr(out), _ptr(S), _ptr(R), _ptr(w), _ptr(cs), _ptr(cr), _ptr(lq), ctypes.c_int(g),
+                        ctypes.c_int(S.shape[1]), ctypes.c_int(R.shape[1]), ctypes.c_int(n))
+    return out
+
+
+def phase_mul(X, ph):
+    '''(X * ph[None, :]) as (nb, 2 nG) real for X (nb, nG) complex (possibly a column slice of a C-order array)
+    and ph (nG) complex; OpenMP kernel, else numpy.'''
+    lib_ = _libthc()
+    nb, g = X.shape
+    if (lib_ is None or not hasattr(lib_, 'SOCTHCphase_mul') or X.dtype != complex or X.strides[1] != 16
+            or X.strides[0] % 16 or X.strides[0] <= 0 or ph.dtype != complex or not ph.flags['C_CONTIGUOUS']):
+        return (X * ph[None, :]).view(float)
+    import ctypes
+    out = np.empty((nb, 2 * g))
+    lib_.SOCTHCphase_mul(_ptr(out), _ptr(X), _ptr(ph), ctypes.c_int(nb), ctypes.c_int(g),
+                         ctypes.c_size_t(X.strides[0] // 16))
+    return out
+
+
 def gram_cols(PP, phi_blk):
     '''(PP phi_blk^T)^2 elementwise (the Gram columns of the ISDF points), squared in place by the C kernel.'''
     G = PP @ phi_blk.T
@@ -977,8 +1008,6 @@ class THCExchange:
                 # serial stream: xi, its spectrum and the potential with the FFT work space, measured ~3.3
                 # (nb, ng) doubles at once (EuOCl: 16.7 GB above the start for a planned 11.3 GB at 2.2)
                 nb = int((0.55 * avail - 8 * nmu * rchunk * 2 - 32 * gchunk * naux) / (8 * ng * 3.3))   # 0.2: aux FT
-            if grid_split:                                            # Alltoallv counts / displacements < 2^31
-                nb = min(nb, size * ((2 ** 31 - 1) // ng))
             nb = max(32, min(nmu, nb))
         if comm is not None:                                          # the same blocks on every rank, >= 1 per rank
             nb, rchunk, gchunk = (comm.allreduce(x, op=__import__('mpi4py').MPI.MIN) for x in (nb, rchunk, gchunk))
@@ -1105,6 +1134,7 @@ class THCExchange:
         ta_comm = 0.
         tw = dict(wait=0., a2a=0., bytes=0.)                          # transpose: waiting, Alltoallv, bytes moved
         prev = None                                                   # (b0, b1, potential rows) awaiting V
+        prow = getattr(self, 'a2a_rows', None) or max(1, (2 ** 31 - 1) // max(ng, 2 * nG))   # rows per Alltoallv
         for b0 in range(0, nmu, nb):
             b1 = min(b0 + nb, nmu)
             nbk = b1 - b0
@@ -1131,22 +1161,31 @@ class THCExchange:
             comm.Barrier()                                            # wait for the slowest rank (timed apart)
             tw['wait'] += time.time() - ta
             ta = time.time()
-            sc = np.array([(ms[q + 1] - ms[q]) * nr for q in range(size)])
-            rc = np.array([(m1 - m0) * (gs[p + 1] - gs[p]) for p in range(size)])
-            rbuf = np.empty(rc.sum())
-            tb = time.time()
-            comm.Alltoallv([xl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE],
-                           [rbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE])
-            tw['a2a'] += time.time() - tb
-            tw['bytes'] += 8. * (sc.sum() + rc.sum())
-            xl = None
+            # the three transposes go in pieces of prow mu rows of the block: every Alltoallv count and displacement
+            # stays below 2^31 whatever the block size (a rank sends or receives at most prow rows of the full
+            # grid or of the full spectrum per piece)
+            npts_p = np.array([gs[p + 1] - gs[p] for p in range(size)])
             xi = np.empty((m1 - m0, ng))
-            off = 0
-            for p in range(size):
-                n_p = gs[p + 1] - gs[p]
-                xi[:, gs[p]:gs[p + 1]] = rbuf[off:off + (m1 - m0) * n_p].reshape(m1 - m0, n_p)
-                off += (m1 - m0) * n_p
-            rbuf = None
+            for a in range(0, nbk, prow):
+                b = min(a + prow, nbk)
+                lo = np.array([min(max(a, ms[q]), b) for q in range(size)])    # rows of the piece owned by q
+                hi = np.array([max(lo[q], min(b, ms[q + 1])) for q in range(size)])
+                nrow = hi - lo
+                nm = int(nrow[rank])
+                sc, rc = nrow * nr, nm * npts_p
+                rbuf = np.empty(rc.sum())
+                tb = time.time()
+                comm.Alltoallv([xl[a:b], (sc, (lo - a) * nr), MPI.DOUBLE],
+                               [rbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE])
+                tw['a2a'] += time.time() - tb
+                tw['bytes'] += 8. * (sc.sum() + rc.sum())
+                off = 0
+                for p in range(size):
+                    xi[lo[rank] - m0:hi[rank] - m0, gs[p]:gs[p + 1]] = rbuf[off:off + nm * npts_p[p]].reshape(
+                        nm, npts_p[p])
+                    off += nm * npts_p[p]
+                rbuf = None
+            xl = None
             ta_comm += time.time() - ta
             # FFT of the own mu rows; A_lr, Xi (small G) from them
             ta = time.time()
@@ -1168,21 +1207,27 @@ class THCExchange:
             comm.Barrier()
             tw['wait'] += time.time() - ta
             ta = time.time()
-            sg = np.array([2 * (m1 - m0) * ncol[q] for q in range(size)])
-            rg = np.array([2 * (ms[p + 1] - ms[p]) * ncol[rank] for p in range(size)])
-            sbuf = np.empty(sg.sum())
-            o_ = 0
-            for q in range(size):                                     # contiguous column slices: memcpy
-                a_, b_ = gsl[q]
-                sbuf[o_:o_ + sg[q]].view(complex).reshape(m1 - m0, ncol[q])[:] = Xh[:, a_:b_]
-                o_ += sg[q]
+            ncol_ = np.array(ncol)
             Xq = np.empty((nbk, ncol[rank]), dtype=complex)
-            tb = time.time()
-            comm.Alltoallv([sbuf, (sg, np.r_[0, np.cumsum(sg)[:-1]]), MPI.DOUBLE],
-                           [Xq.view(float), (rg, np.r_[0, np.cumsum(rg)[:-1]]), MPI.DOUBLE])
-            tw['a2a'] += time.time() - tb
-            tw['bytes'] += 8. * (sg.sum() + rg.sum())
-            sbuf = None
+            for a in range(0, nbk, prow):
+                b = min(a + prow, nbk)
+                lo = np.array([min(max(a, ms[q]), b) for q in range(size)])
+                hi = np.array([max(lo[q], min(b, ms[q + 1])) for q in range(size)])
+                nrow = hi - lo
+                nm, l_ = int(nrow[rank]), int(lo[rank] - m0)
+                sg, rg = 2 * nm * ncol_, 2 * nrow * ncol[rank]
+                sbuf = np.empty(sg.sum())
+                o_ = 0
+                for q in range(size):                                 # contiguous column slices: memcpy
+                    a_, b_ = gsl[q]
+                    sbuf[o_:o_ + sg[q]].view(complex).reshape(nm, ncol[q])[:] = Xh[l_:l_ + nm, a_:b_]
+                    o_ += sg[q]
+                tb = time.time()
+                comm.Alltoallv([sbuf, (sg, np.r_[0, np.cumsum(sg)[:-1]]), MPI.DOUBLE],
+                               [Xq[a:b].view(float), (rg, 2 * (lo - a) * ncol[rank]), MPI.DOUBLE])
+                tw['a2a'] += time.time() - tb
+                tw['bytes'] += 8. * (sg.sum() + rg.sum())
+                sbuf = None
             ta_comm += time.time() - ta
             if by_el:                                                 # P_A = phase x B_label (no FT per block)
                 As = np.zeros((self.auxmol.nao, nbk))
@@ -1237,27 +1282,34 @@ class THCExchange:
             comm.Barrier()
             tw['wait'] += time.time() - ta
             ta = time.time()
-            sbuf = np.empty(rc.sum())
-            o_ = 0
-            for p in range(size):                                     # one copy into the send buffer
-                n_p = gs[p + 1] - gs[p]
-                sbuf[o_:o_ + rc[p]].reshape(m1 - m0, n_p)[:] = vxi[:, gs[p]:gs[p + 1]]
-                o_ += rc[p]
-            vxi = None
             vl = np.empty((nbk, nr))
-            tb = time.time()
-            comm.Alltoallv([sbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE],
-                           [vl, (sc, np.r_[0, np.cumsum(sc)[:-1]]), MPI.DOUBLE])
-            tw['a2a'] += time.time() - tb
-            tw['bytes'] += 8. * (sc.sum() + rc.sum())
-            sbuf = None
+            for a in range(0, nbk, prow):
+                b = min(a + prow, nbk)
+                lo = np.array([min(max(a, ms[q]), b) for q in range(size)])
+                hi = np.array([max(lo[q], min(b, ms[q + 1])) for q in range(size)])
+                nrow = hi - lo
+                nm, l_ = int(nrow[rank]), int(lo[rank] - m0)
+                sc, rc = nrow * nr, nm * npts_p
+                sbuf = np.empty(rc.sum())
+                o_ = 0
+                for p in range(size):                                 # one copy into the send buffer
+                    sbuf[o_:o_ + rc[p]].reshape(nm, npts_p[p])[:] = vxi[l_:l_ + nm, gs[p]:gs[p + 1]]
+                    o_ += rc[p]
+                tb = time.time()
+                comm.Alltoallv([sbuf, (rc, np.r_[0, np.cumsum(rc)[:-1]]), MPI.DOUBLE],
+                               [vl[a:b], (sc, (lo - a) * nr), MPI.DOUBLE])
+                tw['a2a'] += time.time() - tb
+                tw['bytes'] += 8. * (sc.sum() + rc.sum())
+                sbuf = None
+            vxi = None
             ta_comm += time.time() - ta
             prev = (b0, b1, vl)                                       # its V in the next block's Gram pass
             vl = None
             self.log('   streamed THC (grid split): mu block %d-%d of %d, %.0f s (%s, transpose %.0f = wait %.0f + '
                      'Alltoallv %.0f (%.2f GB/s) + pack; aux FT cached for %d of %d own G chunks)'
                      % (b0, b1, nmu, time.time() - t0, ', '.join('%s %.0f' % kv for kv in tt.items()), ta_comm,
-                        tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9, len(p2cache), len(own)))
+                        tw['wait'], tw['a2a'], tw['bytes'] / max(tw['a2a'], 1e-9) / 1e9,
+                        sum(1 for k_ in ecaches[0] if k_[1] == 'S') if by_el else len(p2cache), len(own)))
         if prev is not None:                                          # V of the last block: one more Gram pass
             ta = time.time()
             Vp = np.zeros((prev[1] - prev[0], nmu))
@@ -1383,58 +1435,80 @@ class THCExchange:
             e0._bas = am._bas[sh].copy()
             e0._bas[:, _gto.ATOM_OF] = 0
             el = e0.ao_loc_nr()
-            cut = np.array([4 * e0.bas_exp(i).min() * np.log(1 / eps) for i in range(e0.nbas)])
+            cut = np.array([4 * e0.bas_exp(i).max() * np.log(1 / eps) for i in range(e0.nbas)])   # tightest primitive
             order = np.argsort(-cut, kind='stable')
             perm = np.concatenate([np.arange(el[i], el[i + 1]) for i in order])
             elems[lab] = dict(mol=e0, cut=cut[order], order=order, perm=perm)
         self._elems = (elems, atoms)
         return self._elems
 
-    def _label_ft(self, lab, G, k):
-        '''FT of the first k shells (cutoff order) of label lab on one atom at the origin, (nG, nk) F order as ft_ao
-        returns: kappa_l (-i)^l S_lm(G) sum_p c_p a_p^-(l+3/2) exp(-G^2 / 4 a_p), S_lm the real solid harmonics of
-        pyscf (monomials x cart2sph), kappa_l from ft_ao of one primitive at moderate |G| (calibrated once).  Agrees
-        with ft_ao to 2e-14 of the largest value up to l = 10 (Eu aux), at a fraction of its cost.'''
+    def _ft_kappa_l(self, l):
+        '''kappa_l of the analytic FT of a shell of angular momentum l: ft_ao of one primitive at moderate |G|
+        over (-i)^l S_lm(G) c exp(-G^2 / 4) (calibrated once per l).'''
         from pyscf import gto as _gto
-        e = self._elems[0][lab]
-        mol = e['mol']
         kap = getattr(self, '_ft_kappa', None)
         if kap is None:
             kap = self._ft_kappa = {}
+        if l not in kap:
+            rg = np.random.default_rng(1)
+            u = rg.normal(size=(64, 3))
+            u /= np.linalg.norm(u, axis=1)[:, None]
+            Gc = u * rg.uniform(0.5, 2.5, 64)[:, None]
+            pm = _gto.M(atom='X 0 0 0', basis={'X': [[l, [1., 1.]]]}, unit='B', verbose=0)
+            f = ft_ao(pm, Gc)
+            g = _solid_harmonics(l, Gc) * (pm._libcint_ctr_coeff(0)[0, 0]
+                                           * np.exp(-np.einsum('gx,gx->g', Gc, Gc) / 4.))[:, None]
+            sel = abs(g) > 1e-3 * abs(g).max()
+            kap[l] = (f[sel] / ((-1j) ** l * g[sel])).real.mean()
+        return kap[l]
+
+    def _solid_all(self, G):
+        '''kappa_l S_lm(G) for l = 0 .. the largest l of the aux basis, (nG, sum_l 2l+1), and the column offset of
+        each l: the angular part of every label's FT at G (shared by the labels).'''
+        lmax = getattr(self, '_ft_lmax', None)
+        if lmax is None:
+            lmax = self._ft_lmax = max(e['mol'].bas_angular(i) for e in self._elems[0].values()
+                                       for i in range(e['mol'].nbas))
+        soff = np.concatenate([[0], np.cumsum([2 * l + 1 for l in range(lmax + 1)])])
+        S = np.empty((len(G), soff[-1]))
+        for l in range(lmax + 1):
+            S[:, soff[l]:soff[l + 1]] = self._ft_kappa_l(l) * _solid_harmonics(l, G)
+        return S, soff
+
+    def _label_parts(self, lab, G, k, soff):
+        '''The radial part of the FT of the first k shells (cutoff order) of label lab on one atom at the origin:
+        B[:, c] = (-i)^l S[:, cs[c]] R[:, cr[c]] with S, soff = _solid_all(G) (real solid harmonics of pyscf:
+        monomials x cart2sph, times kappa_l) and R (nG, contracted shells) = sum_p c_p a_p^-(l+3/2)
+        exp(-G^2 / 4 a_p).  S and R are ~4x smaller than B (Eu:YSO: 0.5 vs 1.8 thousand columns), so they are what
+        is cached.  Returns R, cs, cr, lq (l mod 4 per column).'''
+        e = self._elems[0][lab]
+        mol = e['mol']
         G2 = np.einsum('gx,gx->g', G, G)
-        shells = e['order'][:k]
-        el = mol.ao_loc_nr()
-        nk = int(sum(el[i + 1] - el[i] for i in shells))
-        out = np.empty((len(G), nk), dtype=complex, order='F')
-        solid, expo = {}, {}
-        off = 0
-        for i in shells:
+        expo = {}
+        rads, cs, cr, lq = [], [], [], []
+        for i in e['order'][:k]:
             l = mol.bas_angular(i)
-            if l not in solid:
-                if l not in kap:                                      # kappa_l: one primitive, moderate |G|
-                    rg = np.random.default_rng(1)
-                    u = rg.normal(size=(64, 3))
-                    u /= np.linalg.norm(u, axis=1)[:, None]
-                    Gc = u * rg.uniform(0.5, 2.5, 64)[:, None]
-                    pm = _gto.M(atom='X 0 0 0', basis={'X': [[l, [1., 1.]]]}, unit='B', verbose=0)
-                    f = ft_ao(pm, Gc)
-                    g = _solid_harmonics(l, Gc) * (pm._libcint_ctr_coeff(0)[0, 0]
-                                                   * np.exp(-np.einsum('gx,gx->g', Gc, Gc) / 4.))[:, None]
-                    sel = abs(g) > 1e-3 * abs(g).max()
-                    kap[l] = (f[sel] / ((-1j) ** l * g[sel])).real.mean()
-                solid[l] = (kap[l] * (-1j) ** l) * _solid_harmonics(l, G)
-            S = solid[l]
             ex, cf = mol.bas_exp(i), mol._libcint_ctr_coeff(i)
-            nf = 2 * l + 1
             for j in range(cf.shape[1]):
                 rad = np.zeros(len(G))
                 for pexp, c in zip(ex, cf[:, j]):
                     if pexp not in expo:                              # shared by the shells of one exponent
                         expo[pexp] = np.exp(-G2 / (4 * pexp))
                     rad += (c * pexp ** -(l + 1.5)) * expo[pexp]
-                out[:, off:off + nf] = S * rad[:, None]
-                off += nf
-        return out
+                cs.extend(range(soff[l], soff[l + 1]))
+                cr.extend([len(rads)] * (2 * l + 1))
+                lq.extend([l % 4] * (2 * l + 1))
+                rads.append(rad)
+        R = np.ascontiguousarray(np.stack(rads, axis=1))
+        return R, np.array(cs, dtype=np.int32), np.array(cr, dtype=np.int32), np.array(lq, dtype=np.int32)
+
+    def _label_ft(self, lab, G, k):
+        '''FT of the first k shells (cutoff order) of label lab on one atom at the origin, (nG, nk) F order as ft_ao
+        returns: kappa_l (-i)^l S_lm(G) sum_p c_p a_p^-(l+3/2) exp(-G^2 / 4 a_p) (_label_parts).  Agrees with ft_ao
+        to 2e-14 of the largest value up to l = 10 (Eu aux).'''
+        S, soff = self._solid_all(G)
+        R, cs, cr, lq = self._label_parts(lab, G, k, soff)
+        return np.asfortranarray(((-1j) ** lq)[None, :] * S[:, cs] * R[:, cr])
 
     def _a_by_element(self, Xc, g0, g1, g2min, swc, Arows, caches, tt, ckey):
         '''A[:, cols] += Re(P^* X) over the G range [g0, g1) with P_A = exp(-i G.R_A) B_label: B per label (FT of
@@ -1445,17 +1519,25 @@ class THCExchange:
         G = self.Gv[g0:g1]
         ta = time.time()
         P2s = {}
+        Ssoff = None
         for lab, e in elems.items():
             k = int(np.searchsorted(-e['cut'], -g2min, side='right'))
             if k == 0:
                 continue
-            P2 = pcache.get((ckey, lab))
-            if P2 is None:
-                P2 = ft_post(self._label_ft(lab, G, k), swc)           # (2 nG, nk_label), analytic FT
-                if P2.nbytes < left[0]:
-                    pcache[ckey, lab] = P2
-                    left[0] -= P2.nbytes
-            P2s[lab] = P2
+            if Ssoff is None:                                          # angular part: once per chunk, all labels
+                Ssoff = pcache.get((ckey, 'S'))
+                if Ssoff is None:
+                    Ssoff = self._solid_all(G)
+                    if Ssoff[0].nbytes < left[0]:
+                        pcache[ckey, 'S'] = Ssoff
+                        left[0] -= Ssoff[0].nbytes
+            parts = pcache.get((ckey, lab))
+            if parts is None:
+                parts = self._label_parts(lab, G, k, Ssoff[1])         # radial part: ~4x smaller than the FT
+                if parts[0].nbytes < left[0]:
+                    pcache[ckey, lab] = parts
+                    left[0] -= parts[0].nbytes
+            P2s[lab] = ft_label((Ssoff[0],) + parts, swc)              # (2 nG, nk_label), per block
         tt['ft_ao'] += time.time() - ta
         if not P2s:
             return
@@ -1472,21 +1554,23 @@ class THCExchange:
                     left[0] -= ph.nbytes
             nk = P2.shape[1]
             P2a = P2
-            X2 = (Xc * ph[None, :]).view(float)                        # the phase on the spectra (nb, 2 nG)
+            X2 = phase_mul(Xc, ph)                                     # the phase on the spectra (nb, 2 nG)
             tt['ft_ao'] += time.time() - ta
             ta = time.time()
             Arows[a0 + elems[lab]['perm'][:nk]] += (X2 @ P2a).T
             tt['A GEMM'] += time.time() - ta
 
     def _aux_upto(self, g2min, eps=1e-15):
-        '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the smallest
+        '''The aux shells whose FT is not negligible at |G|^2 >= g2min (exp(-G^2 / 4 alpha) > eps for the largest
         exponent of the shell): a prefix of the shells sorted by that cutoff.  Returns the sub-molecule of the prefix
         and its number of functions nk; the functions of the sorted shells are self._aux_perm (aux AO indices), so
         the sub-molecule's functions are aux AOs _aux_perm[:nk].'''
         am = self.auxmol
         if getattr(self, '_aux_cut', None) is None:
-            amin = np.array([am.bas_exp(i).min() for i in range(am.nbas)])
-            cut = 4 * amin * np.log(1 / eps)                            # |G|^2 beyond which shell i is negligible
+            # the FT of exp(-a r^2) falls off as exp(-G^2 / 4a): the tightest primitive of a (contracted) shell
+            # decides (the smallest exponent dropped contracted shells too early: acCD aux, A off by 4e-2)
+            amax = np.array([am.bas_exp(i).max() for i in range(am.nbas)])
+            cut = 4 * amax * np.log(1 / eps)                            # |G|^2 beyond which shell i is negligible
             order = np.argsort(-cut, kind='stable')
             loc = am.ao_loc_nr()
             self._aux_perm = np.concatenate([np.arange(loc[i], loc[i + 1]) for i in order])
@@ -1536,6 +1620,10 @@ class THCExchange:
         else:
             pts = self.piv[:nmu]
             xi, rank = isdf_xi(self.L, self.piv, nmu)
+        if len(pts) < nmu:                                            # small basis: the smooth pair space is exhausted
+            self.log('   %d interpolation points (of %d asked): the point selection ran out of residual'
+                     % (len(pts), nmu))
+            nmu = len(pts)
         t_xi = time.time() - t
         # per-pair interpolation error |rho - sum_mu xi_mu rho(r_mu)| / |rho| on the grid, for all pairs of 16
         # sampled first functions, dropping pairs below 1e-3 of the largest pair sharing that first function
@@ -2393,7 +2481,7 @@ class THCJK:
         self.th.piv_file = getattr(self, 'piv_file', None)
         for k in ('coarsen', 'blocked_pivots', 'far_fit', 'phi_ondemand', 'symm_grid', 'symm_pivots',
                   'ke_precision', 'mesh_override', 'drop_nyquist', 'g_sphere', 'distribute_c',
-                  'a_by_element'):                                    # options, if set
+                  'a_by_element', 'a2a_rows'):                                    # options, if set
             if hasattr(self, k):
                 setattr(self.th, k, getattr(self, k))
         rc = getattr(self, 'exx_trunc', None)                         # smoothed truncated Coulomb exchange
