@@ -15,6 +15,13 @@ derivative type.  Drop-in classes:
 The 2e parts of the first-order Fock matrices come from one unique-quartet pass
 (lib/vhf/fock1.c) and the CPHF response J / K from socutils.scf.jk_multi;
 the 1e terms, XC and the CPHF solver are pyscf's.
+
+Grid response (RKSHessian.grid_response): by default ('auto' / False) none: every XC part (the explicit second
+derivatives and the first-order V_xc of Fock1) on the fixed grid, consistently.  The default omits it on
+purpose: the second-order response needs the second derivatives of the partition weights and the point-motion
+x AO-derivative cross terms, a large cost for a small effect on the frequencies (Trp-cage within 0.19 cm-1 of
+ORCA above 500 cm-1).  True: the strict mode, all XC parts with the full grid response
+(socutils.hessian.xc_grid_response, as the two-component Hessian socutils.hessian.gks by default).
 '''
 
 import ctypes
@@ -1147,6 +1154,51 @@ def xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory=4000):
     return de2
 
 
+class _NumInt1c:
+    """the two-component numint interface socutils.hessian.xc_grid_response reads (_to_numint1c)"""
+    def __init__(self, ni):
+        self._ni = ni
+
+    def _to_numint1c(self):
+        return self._ni
+
+
+def _strict_grid(hessobj):
+    """grid_response True: the XC parts with the full grid response (the default 'auto' / False: none)"""
+    return getattr(hessobj, 'grid_response', False) is True
+
+
+def _xc_grid_response(hessobj, mo_coeff, mo_occ):
+    """(XC partial Hessian (natm, natm, 3, 3), first-order V_xc (natm, 3, nao, nao)) of the RKS density with the
+    full grid response (socutils.hessian.xc_grid_response on D_aa = D_bb = D / 2), computed once per density"""
+    mf = hessobj.base
+    mol = hessobj.mol
+    mocc = mo_coeff[:, mo_occ > 0]
+    dm0 = numpy.dot(mocc * mo_occ[mo_occ > 0], mocc.T)
+    cache = getattr(hessobj, '_xc_gr_cache', None)
+    if cache is not None and cache[0].shape == dm0.shape and abs(cache[0] - dm0).max() < 1e-12:
+        return cache[1], cache[2]
+    from socutils.hessian import xc_grid_response as xgr
+    if mf.do_nlc() or mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)[0] != 0:
+        raise NotImplementedError('grid_response True: range-separated / NLC functionals')
+    proxy = lib.StreamObject()
+    proxy.mol = mol
+    proxy.xc = mf.xc
+    proxy.grids = hessobj.grids if getattr(hessobj, 'grids', None) is not None else mf.grids
+    if proxy.grids.coords is None:
+        proxy.grids.build(with_non0tab=True)
+    proxy._numint = _NumInt1c(mf._numint)
+    nao = mol.nao_nr()
+    dmg = numpy.zeros((2 * nao, 2 * nao))
+    dmg[:nao, :nao] = dmg[nao:, nao:] = dm0 * .5
+    t0 = (logger.process_clock(), logger.perf_counter())
+    hxc, fock1 = xgr.xc_derivs_grid_response(proxy, dmg, with_hess=True, with_fock=True)
+    logger.timer(hessobj, 'XC with the grid response (Hessian and first-order V_xc)', *t0)
+    v1 = numpy.asarray([fock1[ia][:, :nao, :nao].real for ia in range(mol.natm)])
+    hessobj._xc_gr_cache = (dm0, hxc, v1)
+    return hxc, v1
+
+
 def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
                           atmlst=None, max_memory=4000, verbose=None):
     '''pyscf.hessian.rks.partial_hess_elec with the unique-quartet ej / ek and
@@ -1161,6 +1213,8 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
     if (omega != 0 or mf.do_nlc()
             or (atmlst is not None and list(atmlst) != list(range(mol.natm)))):
+        if _strict_grid(hessobj):
+            raise NotImplementedError('grid_response True: range-separated / NLC functionals, atom subsets')
         if _df_mode(mf) is not None:
             from pyscf.df.hessian import rks as df_rks_hess
             return df_rks_hess.partial_hess_elec(hessobj, mo_energy, mo_coeff, mo_occ, atmlst,
@@ -1176,7 +1230,10 @@ def rks_partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     de2 += ej - hyb * ek
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
     t1 = log.timer_debug1('RKS partial hessian, 1e + 2e', *time0)
-    de2 += xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory)
+    if _strict_grid(hessobj):
+        de2 += _xc_grid_response(hessobj, mo_coeff, mo_occ)[0]
+    else:
+        de2 += xc_hess_explicit(hessobj, mo_coeff, mo_occ, max_memory)
     log.timer_debug1('RKS partial hessian, XC', *t1)
     log.timer('RKS partial hessian', *time0)
     return de2
@@ -2125,6 +2182,8 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     dfm = _df_mode(mf)
     if (omega != 0 or (atmlst is not None and list(atmlst) != list(range(mol.natm)))
             or (dfm == 'jk' and hybrid)):
+        if _strict_grid(hessobj):
+            raise NotImplementedError('grid_response True: range-separated functionals, atom subsets, DF-K')
         if dfm is not None:
             from pyscf.df.hessian import rks as df_rks_hess
             return df_rks_hess.make_h1(hessobj, mo_coeff, mo_occ, chkfile, atmlst, verbose)
@@ -2154,7 +2213,12 @@ def rks_make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=No
     vj_occ = occ and vj.shape[-1] == mocc.shape[1] != vj.shape[-2]
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
     max_memory = max(2000, mf.max_memory * .9 - lib.current_memory()[0])
-    h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
+    if _strict_grid(hessobj):
+        h1ao = _xc_grid_response(hessobj, mo_coeff, mo_occ)[1].copy()
+        if occ:
+            h1ao = lib.einsum('axpq,qi->axpi', h1ao, mocc)
+    else:
+        h1ao = xc_deriv1_batched(hessobj, mo_coeff, mo_occ, max_memory, occ=occ)
     hcore_deriv = hessobj.base.nuc_grad_method().hcore_generator(mol)
     for ia in range(mol.natm):
         h = hcore_deriv(ia) if vj_occ else vj[ia] + hcore_deriv(ia)
@@ -3154,7 +3218,8 @@ class _MultiJKCPHF:
         de = super().kernel(*args, **kwargs)
         use = self.sum_rule
         if use == 'auto':
-            use = getattr(self.base, 'grids', None) is not None
+            # the strict grid-response mode is translationally invariant by itself
+            use = getattr(self.base, 'grids', None) is not None and not _strict_grid(self)
         if use:
             natm = self.mol.natm
             if numpy.shape(de)[:2] != (natm, natm):
@@ -3175,7 +3240,8 @@ class _MultiJKCPHF:
         cg = self.cpscf_grids
         if isinstance(cg, str) and cg == 'auto':
             cg = None
-            if hasattr(self.base, 'grids'):
+            # the strict grid-response mode: the CP-SCF response on the SCF grid
+            if hasattr(self.base, 'grids') and not _strict_grid(self):
                 cg = getattr(self, '_cpscf_auto', None)
                 from socutils.dft import grids as sgrids
                 args = dict(CPSCF_GRID_ARGS)
@@ -3221,6 +3287,12 @@ class RHFHessian(_MultiJKCPHF, rhf_hess.Hessian):
 
 
 class RKSHessian(_MultiJKCPHF, rks_hess.Hessian):
+    # grid response of the XC parts: 'auto' (default) / False none (all XC parts on the fixed grid, consistently);
+    # True all of them (the explicit second derivatives and the first-order V_xc, socutils.hessian.
+    # xc_grid_response: a strict reference mode, numpy, slow), and then also no shortcut of the default: the
+    # sum_rule 'auto' off (the grid response is invariant by itself), cpscf_grids 'auto' the SCF grid.  COSX
+    # keeps its own convention.
+    grid_response = 'auto'
     hess_elec = hess_elec
     partial_hess_elec = rks_partial_hess_elec
     make_h1 = rks_make_h1
