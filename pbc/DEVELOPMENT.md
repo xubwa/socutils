@@ -2,8 +2,12 @@
 
 Living document for the periodic Coulomb/exchange work in `socutils/pbc`.  It
 records what was decided, why, what was measured, and what is still open.
-Numbers quoted here come from `pbc/bench` and `pbc/test` (pyscf 2.14, Gamma
-point, 4-core container) unless stated otherwise.
+Numbers quoted in Part I (sections 1-8: references, RSDF, the spinor SCF on it)
+come from `pbc/bench` and `pbc/test` (pyscf 2.14, Gamma point, 4-core container)
+unless stated otherwise.  Part II (sections 9-18) continues from 2026-10-20:
+the dopant pipeline, the route to THC, its streamed MPI build, the bugs found.
+A condensed technical report is `pbc/REPORT.md`; results of the Eu runs are in
+`pbc/HANDOFF_WNSM.md`; usage examples in `examples/pbc/`.
 
 ## 1. Goal
 
@@ -761,7 +765,7 @@ for YSO-size supercells the SR kernel of `lib/pbcdf` is the place to move it).
 * For K, all sets tested give 4e-5..7e-4 per small cell; a K-oriented
   auxiliary basis (or local/robust fitting) is an open item.
 
-## 6. Roadmap
+## 6. Roadmap (as of 2026-10-14; what followed is Part II, the current open items section 18)
 
 1. Done: rigorous envelopes, an envelope family, and the SR 2c metric as
    full - LR (4.4).  The omega dependence is now controlled by precision.
@@ -802,3 +806,359 @@ for YSO-size supercells the SR kernel of `lib/pbcdf` is the place to move it).
   `python pbc/test/test_rsdf.py` (seconds, needs libsocpbcdf.so).
 * Benchmarks: `pbc/bench/README.md`; reference J/K cached in `refjk_*.npz`.
 * auxgen: `pip install git+https://github.com/MolSSI-BSE/basis_set_exchange.git sympy`.
+
+---
+
+# Part II. After RSDF: the dopant pipeline, the route to THC, and its build (2026-10-20 to 2026-11-23)
+
+Sections 1-8 stop at the global fit (RSDF).  This part records, in the order it happened, what was built on
+it and what replaced it for large cells.  Machine: JHU Rockfish (nodes of 48 cores / 192 GB, bigmem 48 cores /
+1.5 TB, HDR100 InfiniBand), pyscf 2.13-2.15, Intel MPI 2021.6 + mpi4py, MKL.  Systems: alpha-quartz (9 atoms),
+A-type Y2O3, EuOCl (6 atoms primitive; supercells to 2x2x2), Eu:Y2SiO5 with 32 atoms, EuCl3, EuBr3, Eu(NO3)3;
+LiH cells for the examples.  The numbers are those of the commit that introduced each step (hash given) or of
+the run logs listed in `pbc/HANDOFF_WNSM.md`.  A condensed account is `pbc/REPORT.md`.
+
+## 9. The dopant pipeline on RSDF (2026-10-20 / 21)
+
+The production route became SCF -> CAHF -> CASCI -> properties, driven by `pbc/bench/dopant_casci.py` (until
+2026-11-19 `examples/14-periodic_dopant_casci.py`).
+
+* **Properties** (`pbc/atomic_prop.py`, c8d1ddc).  W_NSM: the atomic CFOUR operator (SOSFMO2C) in the AO block
+  of the dopant, traced with the core + active density of CASCI root 0.  d00 (7F0 -> 5D0): the dipole about the
+  Eu nucleus over the AO images within a radius, with the transition charge in that region as the measure of
+  the truncation (r is not defined on Gamma-point AOs; the 4f-4f transition density is local).
+* **Several equivalent open-shell sites** (`mcscf/frozen_frac.py`).  In a stoichiometric compound one Eu is
+  active and the others are frozen with their configuration-averaged 4f occupation (6/14 per spinor): the open
+  space is localised on the sites with a Kramers-preserving rotation (zquatev), the frozen shells enter as
+  h + G(D_f) and a constant.
+* **Open shell by reference spinors** (`scf/addons.reference_frac_occ`): projection on atomic 4f spinors when
+  the character of the cell's own spinors is not clean (dense Eu lattices).
+* **Mixed bases**: the active atom relabelled (Eu1) with a larger basis; per-label auxiliary bases; a folded
+  guess from the SCF of a smaller cell of the same crystal.
+* **Screened real-space SR nuclear integrals** for the range-separated X2C-1e of large cells; isolated atoms
+  built under the element symbol so that relabelled atoms keep their basis.
+* **Active-space integrals without the stored vectors** (`RSDF.active_vectors`, `mcscf/eri_active.py`, c5f0a87):
+  the SR three-index integrals of each AO row block are half-transformed to the active pair densities as they
+  are computed and fitted, the LR part comes exactly from the pair FTs rho_tu(G).  Storage naux x ncas^2.
+  EuOCl primitive, 14 Eu 4f spinors: (tu|vw) equal to the `_CDERIS` route to 1e-15, the 60 CASCI(6e,14) levels
+  identical.  This is what the THC runs use for CASCI.
+
+Results of this stage are the RSDF rows of `pbc/HANDOFF_WNSM.md` (EuOCl primitive to 2x2x2, EuCl3, EuBr3,
+Eu(NO3)3, Eu:YSO).  Two findings set the agenda: W is dominated by the core (the 4f part is +1.5 to -25 against
+|W| of 3500-8600 in EuOCl), and EuOCl is not converged with the cell at the primitive cell (W_z -3508 -> -8520
+-> -8409 -> -8632 for primitive, sqrt2 x sqrt2, 2x2x1, 2x2x2), so cells of 50-200 atoms are needed.  RSDF
+stores naux x nao^2 / 2 numbers (EuOCl 2x2x1: 88.5 GB) and its K costs N^4.
+
+## 10. Looking for a cheaper exchange (2026-10-21 to 26)
+
+Each idea was first measured in `pbc/bench` before any production code.
+
+1. **How local is the SR fit?** (`sr_locality.py`)  Metric and coefficient decay on clusters cut from the
+   crystal, variational pair-domain and shared-domain fit errors against exact four-centre SR integrals.  The
+   fit is local only for pairs with a compact function.
+2. **Direct SR exchange** (`link_rsjk.py`, `link_vs_rsdf.py`, 88c712c): pyscf's RangeSeparatedJKBuilder for
+   the SR K on a production density, timed against RSDF per cycle over a supercell series.  It is the exact
+   reference of the ladder below ("level 0").
+3. **Split basis** (`sr_locality.split_basis`): every contracted shell is split at an exponent alpha_c into a
+   compact and a smooth shell, with the exact map chi_cell = chi_split T.  A pair is CX if it contains a
+   compact function, SS otherwise.
+4. **SplitDirectJK** (`pbc/split_direct.py`, fe5f42f): SR J/K direct in the split basis, LR rows, nuclei, S and
+   c0 from `RSDF(lr='gspace', sr_fit=False)`.  Quartz: SR K equal to the exact one to 1e-9, spinor HF equal to
+   RSDF within RSDF's fitting error (2.4e-4 Eh).  `split_direct.periodic` is still the interface through which
+   THCJK enters the SCF.
+5. **The compact/smooth ladder** (`hybrid_k.py`, b80f772): level 0 exact SR, level 1 RSDF, level 2 CX pairs
+   fitted on the pair's two atoms (robust between CX pairs) with SS from the global fit: the local CX fit costs
+   1e-7..1e-6 Eh in E_x (quartz, Y2O3, EuOCl; alpha_c 2..8).  `isdf_rank.py`: the ISDF rank of the SS pair
+   densities on their grid, 16-20 points per smooth function for a few 1e-6 Eh.
+6. **What did not work**: THC of the compact pairs on atomic grids (`compact_thc_rank.py`: rank fine, but a
+   worst-pair floor of 1e-2..1e-4 from the core / valence dynamic range); a one-centre projection of the
+   partners of the compact functions (`proj_check.py`: 2e-4 median / 1e-2 max for nearest neighbours at l <= 6);
+   dropping CX pairs beyond 4 A (1e-3 Eh; 5 A: 3.5e-7 in E_x); the LR part of the CX blocks from the fitted
+   densities (7e-5..1.5e-4 Eh, a charge constraint makes it worse): the exact LR rows are kept.
+
+## 11. THC, level 3 and route 1 (2026-10-23 to 31)
+
+### 11.1 Level 3 (`pbc/thc.py`, b80f772, d919758)
+
+SS pairs by ISDF on the uniform grid of the smooth functions,
+
+    rho_mn(r) ~= sum_mu xi_mu(r) phi_m(r_mu) phi_n(r_mu),
+
+points from a pivoted Cholesky of the Gram matrix G(r, r') = (sum_i phi_i(r) phi_i(r'))^2, xi by least squares
+(Lu-Ying), V_mu,nu = (xi_mu | xi_nu) and A_P,mu = (P | xi_mu) by FFT in RSDF's kernel convention; CX pairs as in
+level 2.  `THCJK` puts it behind the RSDF interface for the spinor SCF.
+
+* **Point selection on a coarse grid** (the default selector): pivoted Cholesky on the grid coarsened per
+  direction, xi fitted on the full grid.  Quartz: 63 s instead of 422 s at the same K accuracy.  K-means,
+  K-means candidates + Cholesky were tried and give worse points.
+* **J cannot use the pair-local fit.**  The pair-local CX fit is fine for K (1e-7 Eh) but gives 3.6e-3 Eh in J:
+  the pair residuals add up with one sign.  First fix: n_SS on the grid plus a robust RI-J of the total density
+  with a global fit (5e-5 Eh), evaluated as L^T (L d) with L = M^-1/2 J3 (M^-1 b had amplified round-off by
+  cond M: 4e-3 between equivalent evaluation orders on EuOCl, then 2e-10).  A cached aux FT in single precision
+  (44 GB for EuOCl) left 1e-3 Eh of non-linear noise and broke the incremental Fock build; dropped (45f38cb).
+* **occ-RI K from the occupied spinors** (`get_k_occ`, c3c8af2): all spin blocks from shared half transforms;
+  EuOCl primitive 198 s per spinor J + K instead of 1243 s.
+* First THC W: EuOCl primitive W_z -3510.09 against RSDF -3508.61 (0.04%), levels within 0.1 cm-1 (8ab3732).
+
+### 11.2 Route 1: no global three-index tensor (dd53f70 .. 60486b2)
+
+Level 3 still took its CX integrals from an RSDF build.  Route 1 removes it:
+
+* **Pair-atom local fit from two-atom cluster integrals** (`pbc/thc_local.py`): per image pair (c on A, x on
+  B + L within r_cut) the SR pair density is fitted with the aux functions of the two atoms (molecular SR
+  integrals), the Gamma coefficients are the sums over L; stored sparse.  The CX-CX block is used non-robust
+  (C^T M C, no CX three-centre integrals in K): within 5e-10 (quartz) / 1.3e-7 Eh (EuOCl) of the robust form.
+  Accuracy of the local fit against the robust level 2: 1.1e-5 Eh (quartz), 1.3e-5 (EuOCl primitive) at
+  r_cut 6 A; a larger fit domain, alpha_c 8 or omega 0.25 do not help (first order in the fit error).
+* **Only what is needed from RSDF** (`lr_columns`, `sr_fit=False`, 357b35a): nuclear terms, c0 and the exact LR
+  rows of the CX pairs; quartz 1 s instead of 16 s.  The SR metric comes from `pbc_intor`, the LR rows of the SS
+  pairs from THC (xi at RSDF's LR G vectors).
+* **J without three-centre integrals** (`pbc/thc_gapw.py`, d410114): smooth density plus compensation Gaussians
+  on the THC grid (FFT); the neutral remainders of the atom-owned compact densities by radial Poisson on atomic
+  grids; the compact pairs see the grid potential (interpolated) and the local potentials.  Quartz: max element
+  error against RSDF 4.1e-6 at 600 radial points.  Evaluating the local potentials only within their support
+  and the grid potential by a quintic spline only where the compact factors live took get_j from 1017 s to 25 s
+  at the same accuracy (7261b95).  Radial grids: Treutler-Ahlrichs 600 is not converged for Eu (E_J -1e-4);
+  Mura-Knowles 2000 for Z > 18 gives -1.9e-7 (897a030).  Angular 302; neighbours' local potentials off (5e-7 on
+  quartz, 0 on EuOCl).
+* **Sparse, density-contracted K** (`get_k_sparse`): CX-SS as H = sum_p (C^T A)_p E_c, K = H Phi_mu; CX-CX as
+  (C_k D)(M C)_k^T on dense local supports; equal to the dense form to 5e-12.
+* Quartz route-1 spinor HF: E - E(exact SR) = -1.3e-5 Eh (RSDF +2.4e-4).
+
+### 11.3 Making K fast (2026-10-29 to 31)
+
+Measured on EuOCl 2x1x1 (bigmem, 48 cores), all spinor spin blocks:
+
+| step | time per K |
+|---|---|
+| C^T A and CX-CX as dense per-aux-atom blocks, LR of all blocks through full LR rows (55b2e23; primitive cell: one K 480 s -> 23 s) | 261 s |
+| batched multi-density K (`get_k_multi`: aa, bb, ab as 6 real densities, density-independent intermediates once), cached SS LR rows, OpenMP scatter kernels (`lib/thc`, libsocthc.so) | 115 s |
+| CX-CX with nx-row intermediates, one batched GEMM per chunk | 81 s |
+| (M C)_P cache within the budget | 71 s |
+| LR from the occupied factors when nocc <= 0.3 nao | 61-63 s |
+
+Per cycle after these: EuOCl 2x1x1 THC ~80 s against RSDF 17 s with the vectors in memory (11 GB); 2x2x1 THC
+425-435 s (CX-CX ~170 s, LR 111 s, CX-SS 45 s, J 57 s; build 12099 s, 70 GB, peak 489 GB) against RSDF 224 s
+(build 7084 s, vectors 88.5 GB).  The exact LR rows of the CX pairs scale as N^4 like RSDF's K: on cells where
+RSDF's vectors fit in memory THC wins storage, not time per cycle.
+
+### 11.4 Accuracy parameters found on the way
+
+* **r_cut of the local fit is not converged for Eu at 6 A**: at a fixed (minao) density E moves by -23 / -5 /
+  -3.2 mEh for 6 -> 7 -> 8 -> 10 A (diffuse partners).  **Far-field fit** (87af252): the compact function times
+  the lattice sum of the partner images not fitted explicitly, which is smooth where the compact function
+  lives, is fitted with the compact atom's own aux on an atomic grid.  6 A + far equals 8 A + far to 3e-8 Eh;
+  without it 6 A is off by 32 mEh.  On by default.
+* **omega**: with the far fit, E(D) - E(omega 0.5) = +2.0e-5 / +3.9e-5 / +7.8e-5 / +9.6e-5 Eh for omega 0.42 /
+  0.35 / 0.30 / 0.25 and 912 / 534 / 320 / 182 LR G vectors (1524 at 0.5).  Route-1 default 0.35 (d478e24).
+  Without the far fit smaller omega was not safe (-1.27 mEh at 0.35).
+* **ISDF cut**: the 1e-13 eigenvalue cut of the Gram pseudo-inverse amplified BLAS rounding (thread-count
+  dependent sums) into V and A: E at a fixed density varied with the thread count by 2.7e-6 Eh (quartz) and
+  6.8e-5 Eh (EuOCl); at 1e-10 by 1.1e-7 and 4.9e-8.  Default 1e-10 (9044f4e).
+* **Point-set scatter**: at N_mu = 16 n_smooth different valid point sets give E_x within ~2e-4 Eh of each other
+  on EuOCl (99a225b); a 4x coarse grid fails (-3e-2).
+
+## 12. The streamed build, memory and MPI (2026-10-28 to 11-10)
+
+### 12.1 Streaming (e4d052b)
+
+xi for all points is N_mu x ngrid numbers (Eu:YSO: 1.4 TB).  The build therefore works in blocks b of mu:
+xi_b = G+[b] Gc with the Gram columns Gc regenerated in grid chunks, its FFT gives A[:, b], A_lr[:, b] and the
+LR rows of xi, and V[b] = int (v * xi_b) Gc^T G+.  G+ is applied once to an explicitly formed xi_b: the
+algebraically equivalent V = G+ Z G+ with Z = Gc v Gc^T lost 5e-4..1e-3 Eh to the conditioning of G+.  Quartz:
+K against the in-core build 6.7e-8.
+
+Later steps of the stream: A by one real GEMM per G chunk with the aux shells pruned by |G| and the weighted
+(Re, Im) layout made by an OpenMP kernel (quartz stream 115 -> 58 s); Gram columns squared in place (58 -> 53
+s); all block sizes and caches from `cell.max_memory` (62776c1).
+
+### 12.2 MPI (556515e .. c18986a)
+
+SPMD with mpi4py: every rank runs the same script; `jk.comm` distributes the work, rank 0's orbitals or density
+are broadcast so that the ranks follow the same SCF.
+
+* K: CX-SS pair blocks, CX-CX chunks and LR batches split over the ranks, one Allreduce; chunk sizes agreed
+  over the ranks.  EuOCl 2x1x1, np 2: 5.6e-16 against serial.
+* GAPW J: uniform-grid rows and atomic grids by rank.
+* Local and far-field fits by compact atom (greedy by size).
+* The stream, first version: mu blocks round-robin, each rank evaluating phi per block ("phi on demand").  On
+  Eu:YSO that repeated the aux FT per block and was ~30x too slow.
+* **Grid-split stream** (c18986a): phi is distributed by grid rows and evaluated once; all ranks share a mu
+  block; xi on the own rows -> Alltoallv -> own mu rows on the full grid for the FFT -> Alltoallv of the spectra
+  to own G chunks for A -> potential back for V.  Quartz np1 174 s -> np4 84 s; same points and density, E_K
+  4.5e-8 between np4 and np1 at equal thread counts.
+* `pyscf` evaluates AOs with a screening per block of 56 points, so values depend (~1e-12) on the block a point
+  falls in, and the ISDF pseudo-inverse amplifies that to 1e-6 Eh: phi is always evaluated in whole aligned
+  blocks (bit-identical to the stored phi).
+
+### 12.3 Memory and communication (2026-11-09 / 10)
+
+Found on EuOCl np4 and the first Eu:YSO runs, each fixed in turn (c7339e4, 9b698f9, 1eb23d8, 916c3f0, a32d303):
+
+| what took the memory or time | fix |
+|---|---|
+| auxgen for the Eu basis, 32 GB and 200 s, on every rank at once (118 GB on a node with 25 GB per rank) | cached on disk, generated on rank 0 only |
+| local fit: (c x P) for all shells of an Eu cluster, 3.4 GB per cluster | compact shells only, in batches within 15% of the budget; LRU cache of the inverse domain metrics by bytes |
+| smooth functions evaluated with all AOs (+6.8 GB on EuOCl) | a cell of the smooth shells only (bit-identical) |
+| the local-fit C summed onto every rank (EuOCl 2x1x1: 29 GB per rank, 55 GB peak) | each aux atom has an owner rank; (M C) from each owner's block broadcast in turn: 15.6 GB |
+| exact LR rows of the CX pairs held by every rank during the build (10 GB) | each rank builds and keeps its own LR G range |
+| mu blocks sized for 8 live block arrays (measured: 3) | 4; blocks twice as large |
+| 37 of 56 s per block in the spectra transpose (EuOCl np4) | G chunks contiguous per rank and balanced by cost: packing is a memcpy, not a fancy-index gather |
+| peak memory misreported | VmHWM of /proc (getrusage's ru_maxrss survives exec) |
+
+The network was not the problem: Alltoallv between nodes ran at 6.2 GB/s per rank (send + receive; about a
+third to a half of the HDR100 link per node).
+
+### 12.4 Symmetry (2026-11-05)
+
+Plain THC broke the site symmetry of EuOCl (P4/nmm): W_y 128.6 where symmetry requires ~0 (RSDF 0.45), a 3.3
+cm-1 splitting of the 7F1 E level.  The cause was the ISDF grid and the greedy points, not MPI, omega or the
+far fit.  **Symmetric THC** (48c1100, default when spglib finds symmetry): the uniform and the coarse mesh are
+mapped onto themselves by the space group and the points are chosen in whole orbits.  EuOCl primitive: W
+(-0.262, 0.454, -3510.4) against RSDF (-0.255, 0.445, -3508.6), 7F1 282.5 / 372.4 / 372.4 against 282.6 / 372.3
+/ 372.3, d00 1.052383e-3 against 1.052370e-3.
+
+Forcing whole orbits took near-dependent points (images close to a symmetry element): quartz Gram matrix with
+269 relative eigenvalues below 1e-10 and E erratic by 1e-4.  Orbits with a member far below the largest residual
+are now rejected (orbit_dep 0.1): 82 such eigenvalues, E within 2e-5 of the plain selection (bdcdc91).
+
+In a P1 cell the error stays: the forbidden W_y of EuOCl computed without symmetry is still -35 on the finer
+default grid, i.e. ~1% of |W| is the THC error of W at a site without symmetry.
+
+### 12.5 The grid (2026-11-05 / 09)
+
+* The uniform grid carries smooth pair densities.  `estimate_ke_cutoff` bounds single integrals, and the errors
+  add up over the pairs of a heavy cell: EuOCl +4.6e-4 Eh at precision 1e-10 (mesh 85x85x143), -1.4e-5 on
+  90x90x144.  The cutoff is estimated at 1e-12 (`ke_precision`).
+* **"Mesh lottery"**: EuOCl energies against RSDF of +4.6e-4 / -2.7e-2 / +1.7e-4 for meshes 85 / 88 / 91.
+  Nyquist rows, a G sphere and the conditioning were ruled out; the 3x coarse grid of the point selection (29
+  points along a) was too coarse (pair-fit error 1e-5).  With 2x: -4.9e-5 / -3.4e-5 / -5.0e-5.  The selection
+  now uses 2x when its memory fits, else 3x with the coarse mesh rounded up; orbit pivots use 3x (the symmetric
+  mesh makes it an exact sublattice).  Plain pivots are distributed over the ranks (`pivots_blocked_dist`).
+* The libcint Rys-root warnings for the high-l SR integrals are harmless (SR against full - LR: 1e-10).
+* A smoothed truncated Coulomb kernel for the exchange (arXiv 2609.00203) was tried in its spherical form
+  (e3a813c, opt-in `exx_trunc`): limited by the shortest lattice vector, not useful for anisotropic supercells;
+  not pursued.
+
+## 13. Eu:YSO with THC + MPI and the build time (2026-11-10 to 16)
+
+Full pipeline on the 32-atom cell, 4 nodes x 2 ranks x 24 threads, 50 GB per rank, 9 h: SCF / CAHF / CASCI
+energies all -2.6e-4 Eh from RSDF (a constant shift), 7F1 186.6 / 403.0 / 478.0 cm-1 identical, |W| 4105.0
+against 4104.6, |d00| 4.003e-4 against 4.00e-4.  Build 14093 s; SCF 3851 s for 19 cycles (~200 s per cycle on
+192 cores): the build costs ~70 cycles.  The RSDF run took 4101 s for 7 cycles on one node with 44 threads
+(~590 s per cycle, vectors on disk): per core the two are comparable (~3e4 against ~2.6e4 core-seconds), so
+"THC is 3x faster per cycle" holds only as wall time on four times the cores.
+
+Streamed V, A on that configuration (per rank, s):
+
+| | before | Gram pipeline + per-label FT | analytic FT (numpy) | cached separable FT |
+|---|---|---|---|---|
+| commit | - | 06043f9, be8cbdb | fc0eaf0 | 6cdda3d |
+| total V, A | ~16200 (extrapolated) | 12543 | 14440 | **9909** |
+| Gram columns + Ginv (xi, V) | ~8000 | 4200 + 1750 | 4000-4400 + 1750 | 4000-4400 + 1650-1830 |
+| aux FT | ~3700 | 2400-3200 | 3800-5250 | 256-489 |
+| waiting for other ranks | ~2000 | 17-1690 | 298-1953 | 182-1146 |
+
+* **Gram pipeline**: the xi pass of block b also adds V of block b-1 (its potential is kept one block):
+  nblocks + 1 Gram passes instead of 2 nblocks.
+* **Per-label aux FT**: P_A(G) = exp(-i G.R_A) B_label(G).  It saved little on Eu:YSO because the single Eu
+  atom carries most of the aux functions.
+* **Analytic B**: kappa_l (-i)^l S_lm(G) sum_p c_p a_p^-(l+3/2) exp(-G^2 / 4 a_p), S_lm the real solid harmonics
+  in pyscf's order (monomials x cart2sph), kappa_l calibrated once against ft_ao; agrees with ft_ao to 2e-14 up
+  to l = 10.  As first written (numpy, single thread, regenerated per G chunk and mu block because its 25 GB
+  cache did not fit the 4.9 GB budget) it made the build slower.  It had been judged by CPU time, not by wall
+  time at 24 threads.
+* **Cached separable parts**: S_lm per l (shared by all labels) and the radial factor per contracted shell,
+  ~2.9 GB per rank, assembled per block by OpenMP kernels (`SOCTHCft_label`, `SOCTHCphase_mul`): 0.016 s per G
+  chunk and block instead of 0.3 s.  First-cycle energies of the three versions agree to 6e-8 Eh.
+
+**Where the rest goes.**  xi is ~70% Gram columns regenerated for all N_mu in each of the 74 blocks (2.6e15 of
+3.7e15 flops per rank); the part that cannot be avoided (Ginv x Gram and V) is ~1300 s.  The block size is set
+by the memory per rank, so the lever is memory (and ranks: fewer rows per rank and larger blocks, 1 / ranks^2).
+Measured on 2 bigmem nodes x 4 ranks x 12 threads, per mu point:
+
+| s per mu | 50 GB per rank (blocks of 177) | 170 GB per rank (blocks of 1057) |
+|---|---|---|
+| xi | 0.535 | 0.192 |
+| FFT / V / A GEMM | 0.129 / 0.132 / 0.128 | 0.131 / 0.135 / 0.042 |
+| aux FT | 0.032 | 0.049 |
+| Alltoallv | 0.014 | 0.108 |
+| total | 1.05 | 0.70 |
+
+The first 170 GB run failed: the spectra transpose exceeded the 2^31 count of Alltoallv (the block cap had
+covered the grid transposes only).  The three transposes now go in pieces of mu rows and the cap is gone
+(4d4b112).  The Alltoallv rate of the 170 GB run was 0.73 GB/s instead of 5.65; a transport-only benchmark with
+the same message sizes gives 5.5-9.3 GB/s on bigmem nodes for both block sizes, so the cause is in the real run
+(one node of that pair, or the large resident memory) and is open.
+
+Tried and dropped: Gram "superblocks" decoupled from the FFT blocks (~2x fewer passes in the memory left, ~15%
+of the build); screening the smooth AOs per grid chunk (92-95% of them nonzero on every chunk).  Not measured:
+the 8-node run (cancelled: one rank on node c514 ran ~10x slow, every other rank waited in MPI).
+
+Waiting, by source (4 nodes): A stage ~300 s (the G-chunk cost model still charges the atom phases at their old
+cost), node speed in xi ~215 s, FFT ~75 s; ~6% of the wall time in total.
+
+Small cells: quartz build 102 s on 4 ranks, K 0.5 s and GAPW J 2.35 s per cycle; J is the atomic-grid side (the
+grid potential splined onto the atomic grids 1.45 s of 3.05 s on one rank, local Poisson 0.44 s, multipoles 0.4
+s; the dense uniform-grid part 0.33 s).
+
+## 14. Charged cells (2026-11-11)
+
+`pbc/charged.py`: a cell of net charge q misses q^2 nu_M / 2 (Makov-Payne, first order; nu_M the Madelung
+constant of the lattice).  `charged.correct(mf)` adds it to energy_nuc for pyscf.pbc SCF objects and for the
+socutils periodic SCF.  He+ / He in cubic boxes (cc-pVDZ): the corrected error against the molecule is -3.28 /
+L^3 and -4.87 / L^3; the difference is the next Makov-Payne term (2 pi q Q / 3V), which is not added.  In a
+minimal basis the two coincide, which the first version of the docstring had taken as general.
+
+The pyscf Gamma-point GHF + GDF failure met here (a real K for a complex density of negligible imaginary part,
+then a complex G = 0 correction added in place) is recorded in a separate hand-off outside this repository.
+
+## 15. Bugs found by small tests on other cells (2026-11-19)
+
+Writing the examples on LiH cells (fcc supercells, acCD auxiliary bases) exposed errors that the tetragonal /
+monoclinic Eu cells with uncontracted auxiliary bases could not show:
+
+| bug | effect | scope |
+|---|---|---|
+| RSDF image range extended by the largest extent of the atoms along one Cartesian axis instead of their largest distance (`_geometry`; also `coulomb_reference`) | LiH 3x3x3: images +-(a1 + a2 + a3) lost, E_K 9.5e-2 Eh off pyscf's GDF, SCF collapse to -40859 Eh | needs a longest atom-atom distance beyond the axis extent by the pair cutoff (~19 bohr): not the EuOCl cells to 2x2x2 (8 bohr) nor Eu:YSO 32 atoms (10 bohr); larger or more skewed cells run before the fix should be rechecked.  After: 2x2x2 .. 4x4x2 agree with GDF to 4e-9 Eh |
+| streamed build: aux shells pruned beyond the \|G\| of their smallest exponent instead of the largest | contracted aux shells dropped too early: A off by 4.5e-2, E_K by 0.056 Eh (LiH 2x2x2, acCD) | uncontracted aux (every production run) unaffected |
+| translation ranges as r / \|A_i\| (`thc_local`, `thc_gapw`, `atomic_prop`) | valid for orthogonal cells only | now from the dual vectors; no change on the tested cells |
+| in-core build with fewer points than asked | failed in a reshape (small bases) | uses the points found |
+
+Also measured there: route 1 needs a large auxiliary basis for the local fit.  LiH 2x2x2, THC - RSDF: -2.5e-3
+Eh with aug_etb(beta = 2), -1.8e-4 with acCD (tau 1e-3), -3.9e-5 with auxgen (1e-8, uncontracted).  And THC is
+not for cells much smaller than the extent of the basis functions: in the LiH primitive cell the smooth pairs
+are few and nearly dependent (69 points found of 240 asked, 9.4e-4 Eh).
+
+## 16. Examples and tests
+
+* `examples/pbc/00..05` (2026-11-19): short scripts, one topic each (RSDF spinor HF, Kramers-restricted KS,
+  charged cells, open-shell CAHF / CASCI, THCJK, THCJK under MPI).  The former example with 47 command-line
+  options is the driver `pbc/bench/dopant_casci.py`.
+* Tests: `pbc/test/` (9 files: Coulomb references, RSDF, RSDF gspace, PARI, periodic CAHF, KS, X2CAMF, spinor
+  CASCI, charged cells).  The THC checks are scripts in `pbc/bench/thc_tests/` (stream against in-core,
+  MPI against serial, symmetric pivots, Gram conditioning, omega and r_cut at a fixed density), not unit tests.
+
+## 17. What the mistakes had in common
+
+* A quantity was judged in the wrong unit: bounds on L2-normalised compact functions (4.4), CPU time for a
+  kernel that runs at 24 threads (13), `ru_maxrss` for the peak memory (12.3).
+* A cache that does not fit is a recompute per block (13); the log line `aux FT cached for n of m own G
+  chunks` shows it.
+* Algebraically equivalent forms differ by the conditioning: M^-1 b against L^T L d (11.1), G+ Z G+ against one
+  G+ on an explicit xi (12.1), the 1e-13 ISDF cut (11.4).
+* Validation on one family of cells and one kind of auxiliary basis leaves whole classes of errors invisible
+  (15): keep a small test on another lattice and with a contracted auxiliary basis.
+* When all ranks slow down at once, compare their CPU times: the others spin in MPI while one computes (13).
+
+## 18. Open items (2026-11-23)
+
+1. Per-rank budget in production runs (50 GB so far; the 192 GB nodes take ~80 GB per rank at 2 ranks per node:
+   74 -> ~33 blocks).
+2. The 1 / ranks^2 fall of xi is unmeasured; the Alltoallv rate in large-memory runs is unexplained.
+3. Re-cut the G chunks from the measured time per chunk; Gram pseudo-inverse on rank 0 only; wait per barrier
+   in the log.
+4. GAPW J on small cells: spline prefilter of the whole oversampled grid every cycle.
+5. Unit tests for the THC path (now bench scripts); a contracted-aux and a skewed-cell case among them.
+6. Applications (cell-size convergence of W for Eu:YSO, the choice of structure, a common frame for W) are in
+   `pbc/HANDOFF_WNSM.md`.

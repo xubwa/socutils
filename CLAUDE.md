@@ -168,8 +168,8 @@ two-electron corrections on) and only then require the `x2camf` integral backend
   route-1 J/K `thc.py` (`THCJK`; with `thc_gapw.py` GAPW J, `thc_local.py` local CX
   fit, OpenMP kernels `lib/thc` -> `libsocthc.so`), MPI SPMD via mpi4py
   (`jk.comm`; `pbc/bench/dopant_casci.py --jk thc` under
-  `mpirun ... python -m mpi4py`; short usage examples, one topic each: `examples/pbc/`). Status, results and
-  run paths: `pbc/HANDOFF_WNSM.md`.
+  `mpirun ... python -m mpi4py`; short usage examples, one topic each: `examples/pbc/`). Technical report: `pbc/REPORT.md`; full
+  development record: `pbc/DEVELOPMENT.md`; results and run paths: `pbc/HANDOFF_WNSM.md`.
 
 - **`cc/`** — relativistic coupled cluster on a spinor reference: `zccsd.py`,
   `zccsd_direct.py`, `zccsdt.py` (triples), `gccsd_t.py`, `eom_zccsd_direct.py`,

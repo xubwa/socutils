@@ -20,8 +20,12 @@ THCExchange.get_k returns K in this vector convention (before the -c0 S D S term
           robust C_p^T J_q + J_p^T C_q - C_p^T M C_q between CX pairs (exact three-centre J);
           LR: the exact RSDF LR rows restricted to the CX-involving blocks.
 
-This is a validation prototype on small cells: the SR three-centre integrals, metric and LR rows come from an
-RSDF build with keep_raw (the CX columns are what a production code would compute locally).'''
+Without local_rcut (level 3 as first written) the SR three-centre integrals, metric and LR rows come from an RSDF
+build with keep_raw: a validation path for small cells.  The production path is route 1, THCJK(..., local_rcut=R):
+no global three-index tensor (CX pairs fitted on their two atoms from cluster integrals, pbc/thc_local.py, plus a
+far-field fit; J by pbc/thc_gapw.py; only the nuclear terms, c0 and the exact LR rows of the CX pairs from RSDF),
+built in mu blocks within cell.max_memory and distributed with MPI (jk.comm).  Method, measurements and history:
+pbc/REPORT.md, pbc/DEVELOPMENT.md Part II; usage: examples/pbc/04-thc_jk.py, 05-thc_mpi.py.'''
 import os, time
 import numpy as np
 import scipy.linalg
