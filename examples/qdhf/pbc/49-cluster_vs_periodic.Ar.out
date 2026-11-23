@@ -1,0 +1,13 @@
+Ar fcc a = 5.260 A, unc-cc-pVDZ, c = 137.036;  -(pi/2c^2) Z^2/Omega = -1.10383e-04
+     R/a  atoms     nao      E1 centre     time
+    0.71     13     533  5.09509e-08        1
+    1.00     19     779  5.62372e-08        1
+    1.25     43    1763  5.53589e-08        7
+    1.50     55    2255  5.69013e-08       12
+    1.75     87    3567  5.66160e-08       40
+X2C-1e with spin-orbit coupling (spin-orbital, same construction):
+    0.71     13            5.77174e-08
+    1.00     19            6.29351e-08
+    1.25     43            6.22834e-08
+periodic (41-x2c1e_pbc_check.Ar.out, 2^3 k):  SFX2C-1e -1.1041e-04, X2C-1e -1.1050e-04
+E1(periodic) - E1(cluster centre):  SFX2C-1e -1.1047e-04, X2C-1e -1.1056e-04  (formula -1.1038e-04)
