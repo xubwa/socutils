@@ -139,8 +139,9 @@ def grad_elec(td_grad, z, atmlst=None, verbose=logger.INFO):
     # the integral derivatives with W instead of building F^R per atom
     W = T - Co.dot(Z.conj().T).dot(C[:, vi].conj().T)
     hessobj = mf.Hessian()
-    if td_grad.grid_response and hasattr(hessobj, 'grid_response'):
-        hessobj.grid_response = True
+    if hasattr(hessobj, 'grid_response'):
+        # both XC parts (dV_xc/dR . W here, the kernel term E_f below) with or both without the grid response
+        hessobj.grid_response = bool(td_grad.grid_response)
         hessobj.grid_response_method = td_grad.grid_response_method
     hcore_deriv = mf.Gradients().hcore_generator(mol)
     vxc1 = hessobj.vxc_deriv1(D0, atmlst)
@@ -245,8 +246,9 @@ def grad_elec_cphf(td_grad, z, atmlst=None, verbose=logger.INFO):
     fock = mf.get_fock()
 
     hessobj = mf.Hessian()
-    if td_grad.grid_response and hasattr(hessobj, 'grid_response'):
-        hessobj.grid_response = True
+    if hasattr(hessobj, 'grid_response'):
+        # both XC parts (dV_xc/dR . W here, the kernel term E_f below) with or both without the grid response
+        hessobj.grid_response = bool(td_grad.grid_response)
         hessobj.grid_response_method = td_grad.grid_response_method
     U, h1ao = _orbital_response(hessobj, mo_energy, C, mo_occ, atmlst, verbose)
     log.timer_debug1('orbital response')
@@ -487,11 +489,18 @@ class Gradients(lib.StreamObject):
 
     # response of the integration grid in the XC terms (semi-numerical: the
     # first-order Fock matrices of socutils.hessian.gks with grid_response and
-    # a finite difference of the kernel term E_f at fixed AO matrices)
-    grid_response = False
+    # a finite difference of the kernel term E_f at fixed AO matrices), for
+    # both XC parts (dV_xc/dR . W and the kernel term E_f) or for neither.
+    # 'auto': on (the fast path where socutils.grad.grid_response supports the
+    # partition, else this one).  The COSX grid response is COSX's own switch
+    # (cosx_grid_response, fast path only).
+    grid_response = 'auto'
     grid_response_method = 'analytic'       # or 'fd'
     # 'zvector' (one response solve) or 'cphf' (3N solves; reference)
     method = 'zvector'
+    # 'zvector' on the fast engines (socutils.grad.tdghf_fast: the SCF's RIJ / COSX J / K and response, scalar
+    # derivative kernels, one X2C adjoint) where applicable
+    fast = True
 
     def __init__(self, td):
         self.base = td
@@ -571,6 +580,12 @@ class Gradients(lib.StreamObject):
         if state is None:
             state = self.state
         z = self.base.xy[state - 1][0]
+        if self.method != 'cphf' and self.fast:
+            # the fast engines of the reference's own J / K mode (socutils.grad.tdghf_fast); None: not applicable
+            from socutils.grad import tdghf_fast
+            de = tdghf_fast.grad_elec(self, z, atmlst, self.verbose)
+            if de is not None:
+                return de
         fn = grad_elec_cphf if self.method == 'cphf' else grad_elec
         with self._response_env():
             return fn(self, z, atmlst, self.verbose)
